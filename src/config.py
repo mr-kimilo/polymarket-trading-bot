@@ -188,7 +188,7 @@ class Config:
         if not path.exists():
             raise ConfigNotFoundError(f"Config file not found: {filepath}")
 
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f) or {}
 
         return cls.from_dict(data)

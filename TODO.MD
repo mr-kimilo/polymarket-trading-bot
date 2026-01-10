@@ -18,3 +18,7 @@
 13. ✅ 15-Minute Period - Minute-by-Minute Changes:我需要在这个下面增加up,down在每分钟开始的值
 14. ✅ 现实任务完成，删除所有的test开头的脚本，rish用来优化UI展示才是根本的解决方案，删除其他解决方案的无用代码，保持代码的整洁
 15. ✅ 现在每15分钟之后数据就不再输出，我知道是新的事件Slug不一样，我们是否可以连续的监控接着的15分钟数据。
+16. ✅ 我需要保持数据，数据内容如下，保存成Json 格式的文件，每15分钟数据保存一个文件，命名规则YYYY-MM-MM-HH-MM,保存到/files目录。
+15-Minute Period - Minute-by-Minute Changes:
+Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC Δ
+17. ✅ 任务16没有完成，代码有报错，生成测试脚本完成测试

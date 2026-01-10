@@ -22,6 +22,7 @@ import asyncio
 import argparse
 import logging
 import time
+import json
 import requests
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -92,6 +93,9 @@ class OrderbookTUI:
 
     def _reset_for_new_market(self) -> None:
         """重置15分钟周期相关的状态，为新市场做准备"""
+        # 保存当前周期数据到文件
+        self._save_period_data()
+        
         # 重置开始价格
         self.start_prices = {"up": None, "down": None}
         self.market_start_time = None
@@ -108,6 +112,66 @@ class OrderbookTUI:
         
         # 增加市场切换计数
         self.market_switch_count += 1
+
+    def _save_period_data(self) -> None:
+        """保存15分钟周期数据到JSON文件"""
+        if len(self.minute_snapshots) == 0:
+            return
+        
+        # 确定保存目录
+        files_dir = Path(__file__).parent.parent / "files"
+        files_dir.mkdir(exist_ok=True)
+        
+        # 生成文件名：YYYY-MM-DD-HH-MM.json
+        if self.market_start_time:
+            file_time = datetime.fromtimestamp(self.market_start_time)
+        else:
+            file_time = datetime.fromtimestamp(self.minute_snapshots[0].timestamp)
+        
+        filename = file_time.strftime("%Y-%m-%d-%H-%M") + ".json"
+        filepath = files_dir / filename
+        
+        # 构建数据
+        start_up = self.start_prices.get("up")
+        start_down = self.start_prices.get("down")
+        
+        data = {
+            "coin": self.coin,
+            "market_slug": self.current_market_slug,
+            "period_start": file_time.isoformat(),
+            "btc_price_start": self.btc_price_start,
+            "btc_price_end": self.btc_price_current,
+            "up_start": start_up,
+            "down_start": start_down,
+            "minutes": []
+        }
+        
+        for snapshot in self.minute_snapshots:
+            # 计算百分比变化
+            up_change_pct = ((snapshot.up_price - start_up) / start_up * 100) if start_up else 0
+            down_change_pct = ((snapshot.down_price - start_down) / start_down * 100) if start_down else 0
+            btc_delta = (snapshot.btc_price_end or 0) - (snapshot.btc_price_start or 0) if snapshot.btc_price_start else 0
+            
+            minute_data = {
+                "minute_index": snapshot.minute_index,
+                "time": datetime.fromtimestamp(snapshot.timestamp).strftime("%H:%M"),
+                "timestamp": snapshot.timestamp,
+                "up": snapshot.up_price,
+                "up_pct": round(up_change_pct, 2),
+                "down": snapshot.down_price,
+                "down_pct": round(down_change_pct, 2),
+                "btc_start": snapshot.btc_price_start,
+                "btc_end": snapshot.btc_price_end,
+                "btc_delta": round(btc_delta, 2) if btc_delta else 0
+            }
+            data["minutes"].append(minute_data)
+        
+        # 保存到文件
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 静默失败，不影响主功能
 
     async def run(self) -> None:
         """Run the TUI."""

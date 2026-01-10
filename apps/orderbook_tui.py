@@ -85,6 +85,29 @@ class OrderbookTUI:
         self.btc_price_start: Optional[float] = None
         self.btc_price_current: Optional[float] = None
         self.last_btc_price_update: float = 0
+        
+        # 市场切换计数器
+        self.market_switch_count: int = 0
+        self.current_market_slug: Optional[str] = None
+
+    def _reset_for_new_market(self) -> None:
+        """重置15分钟周期相关的状态，为新市场做准备"""
+        # 重置开始价格
+        self.start_prices = {"up": None, "down": None}
+        self.market_start_time = None
+        
+        # 清空分钟快照
+        self.minute_snapshots.clear()
+        self.last_snapshot_minute = None
+        
+        # 重置BTC开始价格（将在新市场开始时重新获取）
+        self.btc_price_start = None
+        
+        # 重置价格追踪器
+        self.prices = PriceTracker()
+        
+        # 增加市场切换计数
+        self.market_switch_count += 1
 
     async def run(self) -> None:
         """Run the TUI."""
@@ -117,6 +140,12 @@ class OrderbookTUI:
         @self.market.on_disconnect
         def on_disconnect():  # pyright: ignore[reportUnusedFunction]
             pass
+
+        @self.market.on_market_change
+        def on_market_change(old_slug: str, new_slug: str):  # pyright: ignore[reportUnusedFunction]
+            """当市场切换时重置状态，开始监控新的15分钟周期"""
+            self._reset_for_new_market()
+            self.current_market_slug = new_slug
 
         # Start market manager
         if not await self.market.start():
@@ -211,7 +240,8 @@ class OrderbookTUI:
             countdown = format_countdown(mins, secs)
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
-        lines.append(f"{Colors.CYAN}Orderbook TUI{Colors.RESET} | {self.coin} | {ws_status} | Ends: {countdown}")
+        period_info = f" | Period: #{self.market_switch_count + 1}" if self.market_switch_count > 0 else ""
+        lines.append(f"{Colors.CYAN}Orderbook TUI{Colors.RESET} | {self.coin} | {ws_status} | Ends: {countdown}{period_info}")
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # BTC实际价格信息

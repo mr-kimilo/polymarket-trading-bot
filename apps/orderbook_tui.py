@@ -90,9 +90,13 @@ class OrderbookTUI:
         # 市场切换计数器
         self.market_switch_count: int = 0
         self.current_market_slug: Optional[str] = None
+        self.market_switching: bool = False  # 标志是否正在切换市场
 
     def _reset_for_new_market(self) -> None:
         """重置15分钟周期相关的状态，为新市场做准备"""
+        # 设置切换标志
+        self.market_switching = True
+        
         # 保存当前周期数据到文件
         self._save_period_data()
         
@@ -106,6 +110,8 @@ class OrderbookTUI:
         
         # 重置BTC开始价格（将在新市场开始时重新获取）
         self.btc_price_start = None
+        # 强制下次立即获取BTC价格
+        self.last_btc_price_update = 0
         
         # 重置价格追踪器
         self.prices = PriceTracker()
@@ -182,6 +188,10 @@ class OrderbookTUI:
         async def handle_book(snapshot):  # pyright: ignore[reportUnusedFunction]
             for side, token_id in self.market.token_ids.items():
                 if token_id == snapshot.asset_id:
+                    # 收到新数据，清除切换标志
+                    if self.market_switching:
+                        self.market_switching = False
+                    
                     # 记录价格
                     self.prices.record(side, snapshot.mid_price)
                     
@@ -305,7 +315,8 @@ class OrderbookTUI:
 
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         period_info = f" | Period: #{self.market_switch_count + 1}" if self.market_switch_count > 0 else ""
-        lines.append(f"{Colors.CYAN}Orderbook TUI{Colors.RESET} | {self.coin} | {ws_status} | Ends: {countdown}{period_info}")
+        switching_info = f" | {Colors.YELLOW}Switching...{Colors.RESET}" if self.market_switching else ""
+        lines.append(f"{Colors.CYAN}Orderbook TUI{Colors.RESET} | {self.coin} | {ws_status} | Ends: {countdown}{period_info}{switching_info}")
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
 
         # BTC实际价格信息

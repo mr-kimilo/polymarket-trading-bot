@@ -31,6 +31,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ from typing import Optional, Dict, Callable, List, Union, Awaitable
 
 from src.gamma_client import GammaClient
 from src.websocket_client import MarketWebSocket, OrderbookSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -395,9 +398,14 @@ class MarketManager:
                 continue
 
             if not self._should_switch_market(old_market, market):
+                # 即使不切换，也更新市场信息
+                self._update_current_market(market)
                 continue
 
-            # Market changed - resubscribe to new tokens
+            # Market changed - subscribe to new tokens with replace=True
+            # This clears old orderbook data and subscriptions, then subscribes to new ones
+            # Note: replace=True handles clearing _subscribed_assets and _orderbooks
+            logger.info(f"Switching market: unsubscribing {len(old_tokens)} old tokens, subscribing {len(new_tokens)} new tokens")
             await self.ws.subscribe(list(new_tokens), replace=True)
             self._update_current_market(market)
 

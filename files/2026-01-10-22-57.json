@@ -1,0 +1,59 @@
+{
+  "coin": "BTC",
+  "market_slug": null,
+  "period_start": "2026-01-10T22:57:23.423555",
+  "btc_price_start": 90458,
+  "btc_price_end": 90460,
+  "up_start": 0.915,
+  "down_start": 0.08499999999999999,
+  "minutes": [
+    {
+      "minute_index": 1,
+      "time": "22:57",
+      "timestamp": 1768057044.036689,
+      "up": 0.915,
+      "up_pct": 0.0,
+      "down": 0.08499999999999999,
+      "down_pct": 0.0,
+      "btc_start": 90458,
+      "btc_end": 90458,
+      "btc_delta": 0
+    },
+    {
+      "minute_index": 2,
+      "time": "22:58",
+      "timestamp": 1768057080.3218105,
+      "up": 0.965,
+      "up_pct": 5.46,
+      "down": 0.035,
+      "down_pct": -58.82,
+      "btc_start": 90458,
+      "btc_end": 90458,
+      "btc_delta": 0
+    },
+    {
+      "minute_index": 3,
+      "time": "22:59",
+      "timestamp": 1768057140.1101112,
+      "up": 0.99,
+      "up_pct": 8.2,
+      "down": 0.01,
+      "down_pct": -88.24,
+      "btc_start": 90458,
+      "btc_end": 90458,
+      "btc_delta": 0
+    },
+    {
+      "minute_index": 4,
+      "time": "23:00",
+      "timestamp": 1768057202.2953298,
+      "up": 0.999,
+      "up_pct": 9.18,
+      "down": 0.001,
+      "down_pct": -98.82,
+      "btc_start": 90458,
+      "btc_end": 90460,
+      "btc_delta": 2
+    }
+  ]
+}

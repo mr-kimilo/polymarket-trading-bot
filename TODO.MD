@@ -22,3 +22,6 @@
 15-Minute Period - Minute-by-Minute Changes:
 Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC Δ
 17. ✅ 任务16没有完成，代码有报错，生成测试脚本完成测试
+18. ✅ 任务15经过测试，没有完全刷新，数据是清空了，但是新数据没有及时刷新，一直是空的，解决这个问题。
+    修复：在市场切换时先取消订阅旧token再订阅新token，确保WebSocket正确接收新市场数据
+19.任务16，现在展示有问题，没有BTC的信息，也就是任务8,9的代码不工作了，检查原因。

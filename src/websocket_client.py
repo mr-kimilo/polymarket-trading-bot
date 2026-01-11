@@ -216,6 +216,7 @@ class MarketWebSocket:
         self._ws: Optional["WebSocketClientProtocol"] = None
         self._running = False
         self._subscribed_assets: Set[str] = set()
+        self._initial_subscribe_done = False  # Track if initial subscription was sent
 
         # Orderbook cache
         self._orderbooks: Dict[str, OrderbookSnapshot] = {}
@@ -319,6 +320,7 @@ class MarketWebSocket:
     async def disconnect(self) -> None:
         """Disconnect from WebSocket."""
         self._running = False
+        self._initial_subscribe_done = False  # Reset for next connection
         if self._ws:
             await self._ws.close()
             self._ws = None
@@ -353,10 +355,21 @@ class MarketWebSocket:
             logger.info("Not connected yet, will subscribe after connect")
             return True
 
-        subscribe_msg = {
-            "assets_ids": asset_ids,
-            "type": "MARKET",
-        }
+        # Use "type": "MARKET" for initial connection, "operation": "subscribe" for switching
+        # Per Polymarket docs: initial uses type, subsequent uses operation
+        if self._initial_subscribe_done:
+            # Already connected and subscribed before - use operation format
+            subscribe_msg = {
+                "assets_ids": asset_ids,
+                "operation": "subscribe",
+            }
+        else:
+            # First subscription after connect - use type format
+            subscribe_msg = {
+                "assets_ids": asset_ids,
+                "type": "MARKET",
+            }
+            self._initial_subscribe_done = True
 
         try:
             msg_json = json.dumps(subscribe_msg)

@@ -402,10 +402,20 @@ class MarketManager:
                 self._update_current_market(market)
                 continue
 
-            # Market changed - subscribe to new tokens with replace=True
-            # This clears old orderbook data and subscriptions, then subscribes to new ones
-            # Note: replace=True handles clearing _subscribed_assets and _orderbooks
-            logger.info(f"Switching market: unsubscribing {len(old_tokens)} old tokens, subscribing {len(new_tokens)} new tokens")
+            # Market changed - first unsubscribe from old tokens, then subscribe to new ones
+            logger.info(f"Switching market: {old_slug} -> {market.slug}")
+            logger.info(f"Unsubscribing {len(old_tokens)} old tokens, subscribing {len(new_tokens)} new tokens")
+            
+            # Unsubscribe old tokens first (important for clean switch)
+            if old_tokens:
+                try:
+                    await self.ws.unsubscribe(list(old_tokens))
+                    # Small delay to ensure unsubscribe is processed
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logger.warning(f"Failed to unsubscribe old tokens: {e}")
+            
+            # Subscribe to new tokens with replace=True to clear cached data
             await self.ws.subscribe(list(new_tokens), replace=True)
             self._update_current_market(market)
 

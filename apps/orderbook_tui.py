@@ -64,9 +64,15 @@ class PriceSnapshot:
 class OrderbookTUI:
     """Real-time orderbook viewer with enhanced price tracking."""
 
-    def __init__(self, coin: str = "ETH"):
-        """Initialize TUI."""
+    def __init__(self, coin: str = "ETH", silent: bool = False):
+        """Initialize TUI.
+        
+        Args:
+            coin: Cryptocurrency to monitor (BTC, ETH, SOL, XRP)
+            silent: If True, run in silent mode (no UI output, only save JSON files)
+        """
         self.coin = coin.upper()
+        self.silent = silent
         self.market = MarketManager(coin=self.coin)
         self.prices = PriceTracker()
         self.running = False
@@ -229,46 +235,100 @@ class OrderbookTUI:
         await self.market.wait_for_data(timeout=5.0)
 
         try:
-            # 使用 rich.Live 实现平滑刷新
-            console = Console()
-            with Live(console=console, refresh_per_second=2, screen=True) as live:
+            if self.silent:
+                # 静默模式：不显示UI，只保存数据
+                print(f"[Silent Mode] Monitoring {self.coin} market...")
+                print(f"[Silent Mode] Data will be saved to files/ directory")
+                print(f"[Silent Mode] Press Ctrl+C to stop")
+                last_status_time = 0
                 while self.running:
                     # 定期更新BTC价格（每5秒）
                     if time.time() - self.last_btc_price_update > 5:
                         self._fetch_btc_price(is_start=False)
                     
-                    # 渲染并更新
-                    content = self._build_display()
-                    live.update(Text.from_ansi(content))
-                    await asyncio.sleep(0.5)
+                    # 记录分钟快照（由回调函数处理）
+                    
+                    # 每分钟输出一次简短状态（可选）
+                    current_time = time.time()
+                    if current_time - last_status_time >= 60:
+                        last_status_time = current_time
+                        slug = self.market.current_market.slug if self.market.current_market else "N/A"
+                        snapshots_count = len(self.minute_snapshots)
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {self.coin} | {slug} | {snapshots_count}/15 min")
+                    
+                    await asyncio.sleep(1.0)  # 静默模式下可以更慢的轮询
+            else:
+                # 正常模式：使用 rich.Live 实现平滑刷新
+                console = Console()
+                with Live(console=console, refresh_per_second=2, screen=True) as live:
+                    while self.running:
+                        # 定期更新BTC价格（每5秒）
+                        if time.time() - self.last_btc_price_update > 5:
+                            self._fetch_btc_price(is_start=False)
+                        
+                        # 渲染并更新
+                        content = self._build_display()
+                        live.update(Text.from_ansi(content))
+                        await asyncio.sleep(0.5)
         except KeyboardInterrupt:
             pass
         finally:
+            # 保存最后一个周期的数据
+            if self.silent and len(self.minute_snapshots) > 0:
+                print(f"\n[Silent Mode] Saving final period data...")
+                self._save_period_data()
             await self.market.stop()
 
     def _fetch_btc_price(self, is_start: bool = False) -> None:
-        """获取BTC实际价格"""
+        """获取BTC实际价格，带重试和备用API"""
+        price = None
+        
+        # 尝试主API: CoinGecko
         try:
-            # 使用CoinGecko API获取BTC价格
             url = "https://api.coingecko.com/api/v3/simple/price"
-            params = {
-                "ids": "bitcoin",
-                "vs_currencies": "usd"
-            }
-            response = requests.get(url, params=params, timeout=3)
+            params = {"ids": "bitcoin", "vs_currencies": "usd"}
+            response = requests.get(url, params=params, timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 price = data.get("bitcoin", {}).get("usd")
-                if price:
-                    if is_start:
-                        self.btc_price_start = price
-                        self.btc_price_current = price
-                    else:
-                        self.btc_price_current = price
-                    self.last_btc_price_update = time.time()
         except Exception:
-            # 静默失败，不影响主功能
             pass
+        
+        # 备用API 1: CoinCap
+        if not price:
+            try:
+                url = "https://api.coincap.io/v2/assets/bitcoin"
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    price_str = data.get("data", {}).get("priceUsd")
+                    if price_str:
+                        price = float(price_str)
+            except Exception:
+                pass
+        
+        # 备用API 2: Binance
+        if not price:
+            try:
+                url = "https://api.binance.com/api/v3/ticker/price"
+                params = {"symbol": "BTCUSDT"}
+                response = requests.get(url, params=params, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    price_str = data.get("price")
+                    if price_str:
+                        price = float(price_str)
+            except Exception:
+                pass
+        
+        # 更新价格
+        if price:
+            if is_start:
+                self.btc_price_start = price
+                self.btc_price_current = price
+            else:
+                self.btc_price_current = price
+            self.last_btc_price_update = time.time()
 
     def _record_minute_snapshot(self) -> None:
         """记录每分钟的价格快照"""
@@ -498,10 +558,15 @@ def main():
         choices=["BTC", "ETH", "SOL", "XRP"],
         help="Coin to monitor (default: ETH)"
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Run in silent mode (no UI, only save JSON data files)"
+    )
 
     args = parser.parse_args()
 
-    tui = OrderbookTUI(coin=args.coin)
+    tui = OrderbookTUI(coin=args.coin, silent=args.silent)
 
     try:
         asyncio.run(tui.run())

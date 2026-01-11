@@ -77,6 +77,13 @@ class OrderbookTUI:
         self.prices = PriceTracker()
         self.running = False
         
+        # 静默模式下的日志文件
+        self.log_file = None
+        if self.silent:
+            log_dir = Path(__file__).parent.parent / "logs"
+            log_dir.mkdir(exist_ok=True)
+            self.log_file = log_dir / "silent_monitor.log"
+        
         # 记录市场开始时的价格
         self.start_prices: Dict[str, Optional[float]] = {
             "up": None,
@@ -97,6 +104,16 @@ class OrderbookTUI:
         self.market_switch_count: int = 0
         self.current_market_slug: Optional[str] = None
         self.market_switching: bool = False  # 标志是否正在切换市场
+
+    def _log(self, message: str) -> None:
+        """输出消息到控制台和日志文件（静默模式下）"""
+        print(message, flush=True)
+        if self.log_file:
+            try:
+                with open(self.log_file, 'a', encoding='utf-8') as f:
+                    f.write(message + '\n')
+            except Exception:
+                pass  # 忽略日志写入错误
 
     def _reset_for_new_market(self) -> None:
         """重置15分钟周期相关的状态，为新市场做准备"""
@@ -237,9 +254,9 @@ class OrderbookTUI:
         try:
             if self.silent:
                 # 静默模式：不显示UI，只保存数据
-                print(f"[Silent Mode] Monitoring {self.coin} market...")
-                print(f"[Silent Mode] Data will be saved to files/ directory")
-                print(f"[Silent Mode] Press Ctrl+C to stop")
+                self._log(f"[Silent Mode] Monitoring {self.coin} market...")
+                self._log("[Silent Mode] Data will be saved to files/ directory")
+                self._log("[Silent Mode] Press Ctrl+C to stop")
                 last_status_time = 0
                 while self.running:
                     # 定期更新BTC价格（每5秒）
@@ -254,7 +271,7 @@ class OrderbookTUI:
                         last_status_time = current_time
                         slug = self.market.current_market.slug if self.market.current_market else "N/A"
                         snapshots_count = len(self.minute_snapshots)
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {self.coin} | {slug} | {snapshots_count}/15 min")
+                        self._log(f"[{datetime.now().strftime('%H:%M:%S')}] {self.coin} | {slug} | {snapshots_count}/15 min")
                     
                     await asyncio.sleep(1.0)  # 静默模式下可以更慢的轮询
             else:
@@ -275,7 +292,7 @@ class OrderbookTUI:
         finally:
             # 保存最后一个周期的数据
             if self.silent and len(self.minute_snapshots) > 0:
-                print(f"\n[Silent Mode] Saving final period data...")
+                self._log("\n[Silent Mode] Saving final period data...")
                 self._save_period_data()
             await self.market.stop()
 

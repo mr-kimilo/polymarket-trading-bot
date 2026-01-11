@@ -12,28 +12,35 @@ REM   - Add to Windows Startup folder: shell:startup
 REM   - Or add to Task Scheduler with "Run at startup" trigger
 REM ============================================================================
 
+echo Starting BTC monitor...
 REM Change to script directory
 cd /d "%~dp0"
 
-REM Check if Python is available
-where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo ERROR: Python not found in PATH
-    pause
-    exit /b 1
-)
+REM Ensure logs and files directories exist
+if not exist "logs" mkdir logs
+if not exist "files" mkdir files
 
-REM Activate virtual environment if exists
-if exist ".venv\Scripts\activate.bat" (
+REM Create or activate virtual environment if needed
+if not exist ".venv\Scripts\activate.bat" (
+    echo Creating virtual environment and installing requirements...
+    python -m venv .venv
+    call .venv\Scripts\activate.bat
+    if exist "requirements.txt" (
+        echo Installing Python dependencies from requirements.txt...
+        .venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel > logs\pip_install_background.log 2>&1
+        .venv\Scripts\python.exe -m pip install -r requirements.txt >> logs\pip_install_background.log 2>&1
+    ) else (
+        echo requirements.txt not found; ensure dependencies installed manually. > logs\pip_install_background.log
+    )
+    REM Ensure 'rich' is installed
+    .venv\Scripts\python.exe -m pip install rich >> logs\pip_install_background.log 2>&1
+) else (
     call .venv\Scripts\activate.bat
 )
 
-REM Create files directory if not exists
-if not exist "files" mkdir files
-
-REM Start BTC monitor in minimized window
+REM Start BTC monitor in minimized window using venv python
 echo Starting BTC monitor...
-start "Polymarket-BTC" /min cmd /c "python orderbook.py --coin BTC --silent"
+start "Polymarket-BTC" /min cmd /c ".venv\Scripts\python.exe orderbook.py --coin BTC --silent >> logs\background_btc.log 2>&1"
 
 REM Optional: Start other coin monitors (uncomment as needed)
 REM start "Polymarket-ETH" /min cmd /c "python orderbook.py --coin ETH --silent"

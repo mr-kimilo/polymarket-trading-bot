@@ -36,3 +36,33 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - 静默模式下只输出每分钟简短状态，不渲染UI
     - 创建 start_silent_monitor.bat 用于手动启动
     - 创建 start_background_monitors.bat 用于系统启动时运行多个币种监控
+
+21. ✅ 运行start_silent_monitor.bat，想让系统在后台静默运行，
+    错误：为什么启动之后，需要按任意键才能继续呢？可以去掉这个吗？我想开机启动的时候设置，自动运行，不用手动干预
+    解决：
+    - 移除脚本中的 pause 命令
+    - 在脚本结束时使用 exit /b 0 而不是等待用户输入
+    - 修复 start_background_monitors.bat 中的重复 else 语法错误
+    - 验证：脚本启动后立即运行，不需要用户干预
+    
+22. ✅ 服务启动之后，电脑锁屏，15分钟之后就休眠了，我需要在休眠状态start_silent_monitor.bat一样能运行，是否需要启动另外一个守护线程？思考并给出答案。
+    分析：Windows休眠时所有用户进程都会暂停，这是操作系统级别的限制，守护线程无法解决。
+    解决方案：
+    - 方案1：`start_monitor_no_sleep.bat` - 使用powercfg禁用休眠（需要管理员权限）
+    - 方案2：`start_monitor_keepawake.bat` - 使用PowerShell模拟键盘活动（F15键）防止休眠（无需管理员权限）
+    - 辅助脚本：
+      - `prevent_sleep.bat` - 单独禁用休眠
+      - `restore_sleep.bat` - 恢复休眠设置
+      - `keep_awake.ps1` - PowerShell保持唤醒脚本
+    推荐：使用 `start_monitor_keepawake.bat`，它会在后台启动keep-awake进程，每60秒模拟一次键盘活动防止系统休眠
+    需求更新：✅ 保留start_monitor_keepawake.bat，删除其他无用的方案，优化脚本输出
+    - 已删除：start_monitor_no_sleep.bat, prevent_sleep.bat, restore_sleep.bat
+    - 已优化：start_monitor_keepawake.bat 现在显示友好的启动进度和实时状态输出
+23. ✅ 运行start_monitor_keepawake.bat，监控效果是否支持，现在运行退出了
+    问题：之前的脚本使用PowerShell管道导致缓冲问题，输出不能实时显示
+    解决：
+    - 修复 start_monitor_keepawake.bat 中的Windows批处理嵌套if语法错误
+    - 移除PowerShell管道，直接运行Python脚本
+    - 修改 orderbook_tui.py 添加 `_log()` 方法，同时输出到控制台和日志文件
+    - 使用 `flush=True` 确保输出立即显示
+    验证：脚本现在正常运行，实时显示监控状态

@@ -13,27 +13,40 @@ REM ============================================================================
 
 title Polymarket Silent Monitor - BTC
 
-REM Change to script directory
-cd /d "%~dp0"
-
-REM Activate virtual environment if exists
-if exist ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
-)
-
-REM Create logs directory if not exists
-if not exist "logs" mkdir logs
-
-REM Get current date for log file
-for /f "tokens=1-3 delims=/ " %%a in ('date /t') do set logdate=%%c-%%a-%%b
-for /f "tokens=1-2 delims=: " %%a in ('time /t') do set logtime=%%a-%%b
-
-REM Run the monitor in silent mode
-REM Output is redirected to log file, errors to separate error log
 echo [%date% %time%] Starting Polymarket Silent Monitor...
 echo [%date% %time%] Press Ctrl+C to stop
 
-python orderbook.py --coin BTC --silent 2>&1
+REM Change to script directory
+cd /d "%~dp0"
 
-echo [%date% %time%] Monitor stopped.
-pause
+REM Ensure logs directory exists
+if not exist "logs" mkdir logs
+
+REM Setup or activate virtual environment
+if not exist ".venv\Scripts\activate.bat" (
+    echo Creating virtual environment and installing requirements...
+    python -m venv .venv
+    call .venv\Scripts\activate.bat
+    if exist "requirements.txt" (
+        echo Installing Python dependencies from requirements.txt...
+        .venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel > logs\pip_install.log 2>&1
+        .venv\Scripts\python.exe -m pip install -r requirements.txt >> logs\pip_install.log 2>&1
+    ) else (
+        echo requirements.txt not found; ensure dependencies installed manually. > logs\pip_install.log
+    )
+    echo Ensuring 'rich' is installed...
+    .venv\Scripts\python.exe -m pip install rich >> logs\pip_install.log 2>&1
+) else (
+    call .venv\Scripts\activate.bat
+)
+
+REM Run the monitor in silent mode using the venv python
+echo [%date% %time%] Starting Polymarket Silent Monitor...
+echo [%date% %time%] Press Ctrl+C to stop
+
+.venv\Scripts\python.exe orderbook.py --coin BTC --silent >> logs\silent_monitor.log 2>&1
+
+echo [%date% %time%] Monitor stopped. >> logs\silent_monitor.log
+REM Exit without pause for automatic/unattended operation
+exit /b 0
+

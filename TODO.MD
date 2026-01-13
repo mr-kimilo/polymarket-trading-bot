@@ -66,3 +66,19 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - 修改 orderbook_tui.py 添加 `_log()` 方法，同时输出到控制台和日志文件
     - 使用 `flush=True` 确保输出立即显示
     验证：脚本现在正常运行，实时显示监控状态
+24. ✅ 经过检查，脚本运行一段时间后连接断开了，你检查files目录，早上八点生成之后，直到下午五点才连上，是不是我需要设置脚本运行12小时就重启一次。
+    问题分析：从files目录的文件时间戳看，08:30到17:09有近9小时的数据丢失，WebSocket连接断开后没有自动恢复
+    解决方案：
+    - 添加自动重启机制：默认每12小时自动重启（可通过 --max-runtime 参数调整）
+    - 添加连接健康检查：每60秒检查一次连接状态
+    - 无数据超时检测：如果5分钟（300秒）没有收到数据，自动触发重启
+    - WebSocket断开检测：检测到连接断开时自动重启
+    - 崩溃恢复：脚本异常退出时自动重启
+    - 退出码约定：0=正常退出，42=需要重启
+    修改文件：
+    - apps/orderbook_tui.py: 添加 MAX_RUNTIME_HOURS、HEALTH_CHECK_INTERVAL、MAX_NO_DATA_SECONDS 常量
+    - apps/orderbook_tui.py: 添加 start_time、last_data_time、should_restart 状态跟踪
+    - apps/orderbook_tui.py: 在数据回调中更新 last_data_time
+    - apps/orderbook_tui.py: 在主循环中添加运行时间检查和健康检查逻辑
+    - apps/orderbook_tui.py: main() 函数返回退出码
+    - start_monitor_keepawake.bat: 添加自动重启循环，检测退出码42时自动重启

@@ -61,21 +61,36 @@ class PriceSnapshot:
         self.minute_index = minute_index  # 15分钟周期内的第几分钟 (1-15)
 
 
+# 最大运行时间（小时），超过后自动重启
+MAX_RUNTIME_HOURS = 12
+# 连接健康检查间隔（秒）
+HEALTH_CHECK_INTERVAL = 60
+# 最大无数据时间（秒），超过则认为连接不健康
+MAX_NO_DATA_SECONDS = 300
+
+
 class OrderbookTUI:
     """Real-time orderbook viewer with enhanced price tracking."""
 
-    def __init__(self, coin: str = "ETH", silent: bool = False):
+    def __init__(self, coin: str = "ETH", silent: bool = False, max_runtime_hours: float = MAX_RUNTIME_HOURS):
         """Initialize TUI.
         
         Args:
             coin: Cryptocurrency to monitor (BTC, ETH, SOL, XRP)
             silent: If True, run in silent mode (no UI output, only save JSON files)
+            max_runtime_hours: Maximum runtime in hours before auto-restart (default: 12)
         """
         self.coin = coin.upper()
         self.silent = silent
+        self.max_runtime_hours = max_runtime_hours
         self.market = MarketManager(coin=self.coin)
         self.prices = PriceTracker()
         self.running = False
+        
+        # 启动时间和最后数据时间（用于健康检查）
+        self.start_time: float = time.time()
+        self.last_data_time: float = time.time()
+        self.should_restart: bool = False  # 标志是否需要重启
         
         # 静默模式下的日志文件
         self.log_file = None
@@ -215,6 +230,9 @@ class OrderbookTUI:
                     if self.market_switching:
                         self.market_switching = False
                     
+                    # 更新最后数据时间（用于健康检查）
+                    self.last_data_time = time.time()
+                    
                     # 记录价格
                     self.prices.record(side, snapshot.mid_price)
                     
@@ -256,22 +274,53 @@ class OrderbookTUI:
                 # 静默模式：不显示UI，只保存数据
                 self._log(f"[Silent Mode] Monitoring {self.coin} market...")
                 self._log("[Silent Mode] Data will be saved to files/ directory")
+                self._log(f"[Silent Mode] Max runtime: {self.max_runtime_hours} hours (auto-restart)")
                 self._log("[Silent Mode] Press Ctrl+C to stop")
                 last_status_time = 0
+                last_health_check = time.time()
                 while self.running:
+                    current_time = time.time()
+                    
+                    # 检查是否需要自动重启（超过最大运行时间）
+                    runtime_hours = (current_time - self.start_time) / 3600
+                    if runtime_hours >= self.max_runtime_hours:
+                        self._log(f"\n[Auto-Restart] Max runtime reached ({self.max_runtime_hours}h). Triggering restart...")
+                        self.should_restart = True
+                        self.running = False
+                        break
+                    
+                    # 健康检查：检测连接是否还活着
+                    if current_time - last_health_check >= HEALTH_CHECK_INTERVAL:
+                        last_health_check = current_time
+                        no_data_seconds = current_time - self.last_data_time
+                        
+                        if no_data_seconds > MAX_NO_DATA_SECONDS:
+                            self._log(f"\n[Health Check] No data for {int(no_data_seconds)}s. Connection may be dead.")
+                            self._log("[Health Check] Triggering restart to recover connection...")
+                            self.should_restart = True
+                            self.running = False
+                            break
+                        
+                        # 检查WebSocket连接状态
+                        if not self.market.is_connected:
+                            self._log(f"\n[Health Check] WebSocket disconnected. Triggering restart...")
+                            self.should_restart = True
+                            self.running = False
+                            break
+                    
                     # 定期更新BTC价格（每5秒）
-                    if time.time() - self.last_btc_price_update > 5:
+                    if current_time - self.last_btc_price_update > 5:
                         self._fetch_btc_price(is_start=False)
                     
                     # 记录分钟快照（由回调函数处理）
                     
                     # 每分钟输出一次简短状态（可选）
-                    current_time = time.time()
                     if current_time - last_status_time >= 60:
                         last_status_time = current_time
                         slug = self.market.current_market.slug if self.market.current_market else "N/A"
                         snapshots_count = len(self.minute_snapshots)
-                        self._log(f"[{datetime.now().strftime('%H:%M:%S')}] {self.coin} | {slug} | {snapshots_count}/15 min")
+                        runtime_str = f"{runtime_hours:.1f}h/{self.max_runtime_hours}h"
+                        self._log(f"[{datetime.now().strftime('%H:%M:%S')}] {self.coin} | {slug} | {snapshots_count}/15 min | Runtime: {runtime_str}")
                     
                     await asyncio.sleep(1.0)  # 静默模式下可以更慢的轮询
             else:
@@ -563,8 +612,12 @@ class OrderbookTUI:
         return "\n".join(lines)
 
 
-def main():
-    """Main entry point."""
+def main() -> int:
+    """Main entry point.
+    
+    Returns:
+        Exit code: 0 for normal exit, 42 for restart request
+    """
     parser = argparse.ArgumentParser(
         description="Orderbook TUI for Polymarket 15-minute markets"
     )
@@ -580,16 +633,28 @@ def main():
         action="store_true",
         help="Run in silent mode (no UI, only save JSON data files)"
     )
+    parser.add_argument(
+        "--max-runtime",
+        type=float,
+        default=MAX_RUNTIME_HOURS,
+        help=f"Maximum runtime in hours before auto-restart (default: {MAX_RUNTIME_HOURS})"
+    )
 
     args = parser.parse_args()
 
-    tui = OrderbookTUI(coin=args.coin, silent=args.silent)
+    tui = OrderbookTUI(coin=args.coin, silent=args.silent, max_runtime_hours=args.max_runtime)
 
     try:
         asyncio.run(tui.run())
+        # 检查是否需要重启
+        if tui.should_restart:
+            print("\n[Restart] Exiting with code 42 for auto-restart...")
+            return 42
+        return 0
     except KeyboardInterrupt:
         print("\nExiting...")
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

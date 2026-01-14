@@ -119,18 +119,24 @@ echo.
 echo [%date% %time%] Monitor exited with code: %EXIT_CODE%
 
 REM Check if restart is requested (exit code 42)
-if %EXIT_CODE% EQU 42 (
-    echo [%date% %time%] Restart requested. Restarting in 5 seconds...
-    goto MONITOR_LOOP
-)
+if %EXIT_CODE% EQU 42 goto DO_RESTART
 
 REM Also restart on crash (non-zero exit code except for manual exit)
-if %EXIT_CODE% NEQ 0 (
-    echo [%date% %time%] Unexpected exit. Restarting in 10 seconds...
-    timeout /t 10 /nobreak > nul
-    goto MONITOR_LOOP
-)
+if %EXIT_CODE% NEQ 0 goto DO_CRASH_RESTART
 
+REM Normal exit (exit code 0) - stop the loop
+goto NORMAL_EXIT
+
+:DO_RESTART
+echo [%date% %time%] Restart requested. Restarting in 5 seconds...
+goto MONITOR_LOOP
+
+:DO_CRASH_RESTART
+echo [%date% %time%] Unexpected exit. Restarting in 10 seconds...
+timeout /t 10 /nobreak > nul
+goto MONITOR_LOOP
+
+:NORMAL_EXIT
 echo.
 echo ============================================================================
 echo    Monitor Status: STOPPED (Normal Exit)

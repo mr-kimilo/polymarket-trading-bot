@@ -82,3 +82,43 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - apps/orderbook_tui.py: 在主循环中添加运行时间检查和健康检查逻辑
     - apps/orderbook_tui.py: main() 函数返回退出码
     - start_monitor_keepawake.bat: 添加自动重启循环，检测退出码42时自动重启
+
+25. ✅ 尝试做一次btc 15分钟的交易，开始之前，先给我找到下单逻辑，止盈止损逻辑。我需要配置对应的止盈止损参数，放到make-order.md
+    解决：已创建 make-order.md 文档，包含：
+    - 下单逻辑概述：TradingBot -> OrderSigner -> ClobClient 流程
+    - 止盈止损逻辑：基于绝对价格变化（美元），非百分比
+      - 止盈价格 = 入场价格 + take_profit (默认 +$0.10)
+      - 止损价格 = 入场价格 - stop_loss (默认 -$0.05)
+    - 配置参数说明：coin, size, take_profit, stop_loss, drop_threshold 等
+    - 运行命令示例：
+      ```
+      python apps/run_flash_crash.py --coin BTC --size 10 --take-profit 0.10 --stop-loss 0.05
+      ```
+    - 推荐配置组合（保守/标准/激进）
+    - 手动下单Python代码示例
+26. ✅ start_monitor_keepawake.bat 12小时间隔重启失败，改成5分钟重启，我观察是否能重启成功，是否需要另外一个bat程序用来循环，到时间就重启start_monitor_keepawake.bat 
+补充1：时间到了之后，保存了数据，并开始重启，但是重启的过程中cmd窗口退出，重启失败。解决问题。
+补充2：问题没解决，同样的问题
+    解决：
+    - 修改 MAX_RUNTIME_HOURS 从 12 改为 5/60（5分钟）用于测试重启功能
+    - 修改 start_monitor_keepawake.bat 中 --max-runtime 参数从 12 改为 0.083（约5分钟）
+    - 当前 bat 脚本已包含自动重启循环逻辑，不需要另外的监控程序
+    - 重启机制：Python 脚本在运行时间达到 max_runtime 时会设置 should_restart=True 并以退出码 42 退出
+    - bat 脚本检测到退出码 42 时会自动执行 goto MONITOR_LOOP 重新启动
+    - 验证：运行 start_monitor_keepawake.bat，观察5分钟后是否自动重启
+    - 生产环境：测试通过后，将 MAX_RUNTIME_HOURS 改回 12，--max-runtime 改回 12
+    
+    补充1修复：
+    - 问题原因：bat脚本中使用 `if ... ( goto ... )` 语法时，括号内的 goto 可能导致脚本意外退出
+    - 解决方案：将括号内的条件跳转改为直接的 `if ... goto LABEL` 格式
+    - 修改内容：
+      - `if %EXIT_CODE% EQU 42 goto DO_RESTART` （不使用括号）
+      - `if %EXIT_CODE% NEQ 0 goto DO_CRASH_RESTART` （不使用括号）
+      - 添加独立的 `:DO_RESTART`、`:DO_CRASH_RESTART`、`:NORMAL_EXIT` 标签
+    - 验证：再次运行 start_monitor_keepawake.bat，观察5分钟后是否能正常重启
+    
+    补充2修复（根本原因找到）：
+    - **根本原因**：`orderbook.py` 入口脚本使用 `main()` 而不是 `sys.exit(main())`，导致退出码总是0，不是42！
+    - 修复内容：将 `orderbook.py` 中的 `main()` 改为 `sys.exit(main())`
+    - 新增 `run_monitor.bat`：简化的启动脚本，逻辑更清晰，避免复杂的 setlocal 问题
+    - 验证：运行 `run_monitor.bat`，观察5分钟后是否能正常重启

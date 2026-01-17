@@ -396,13 +396,23 @@ class ReboundStrategy:
         
         return False
     
-    def _close_all_positions(self) -> None:
+    def _close_all_positions(self, use_prices: Optional[Dict[str, float]] = None) -> None:
         """
         关闭所有持仓并更新数据库
         在15分钟周期结束时调用
+        
+        Args:
+            use_prices: 可选，指定用于计算PnL的价格。
+                       如果不提供，则使用当前价格追踪器中的价格。
+                       用于市场切换时，使用旧市场的最后价格。
         """
         for side, pos_info in list(self._active_positions.items()):
-            current_price = self.prices.get_current_price(side)
+            # 优先使用传入的价格（旧市场的最后价格）
+            if use_prices and side in use_prices:
+                current_price = use_prices[side]
+            else:
+                current_price = self.prices.get_current_price(side)
+            
             entry_price = pos_info.get("entry_price", 0)
             size = pos_info.get("size", 0)
             db_id = pos_info.get("db_id")
@@ -436,8 +446,16 @@ class ReboundStrategy:
     
     def _reset_for_new_period(self) -> None:
         """为新的15分钟周期重置状态"""
-        # 先关闭现有持仓
-        self._close_all_positions()
+        # 在关闭持仓前，保存当前价格（旧市场的最后价格）
+        # 这样可以确保使用正确的价格计算PnL
+        last_prices: Dict[str, float] = {}
+        for side in ["up", "down"]:
+            price = self.prices.get_current_price(side)
+            if price > 0:
+                last_prices[side] = price
+        
+        # 使用旧市场的最后价格关闭现有持仓
+        self._close_all_positions(use_prices=last_prices if last_prices else None)
         
         # 重置价格历史
         self._price_history = {"up": [], "down": []}

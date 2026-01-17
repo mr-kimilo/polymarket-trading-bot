@@ -229,3 +229,31 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     # 只运行Rebound策略
     双击 run_rebound_strategy.bat
     ```
+
+30. ✅ 检查rebound.log，为什么Rebound策略在没有到达15分钟就closed订单了。
+    
+    问题分析：
+    从日志可以看到：
+    - 15:46:32 开仓 UP @ 0.2650
+    - 15:51:15 市场切换（约5分钟后）
+    - 15:51:18 平仓 UP @ 0.0950（亏损64.2%）
+    
+    问题根因：
+    1. Polymarket的市场在15分钟周期结束前就切换到新市场
+    2. 市场切换触发 `_reset_for_new_period()` 
+    3. 该方法调用 `_close_all_positions()` 获取价格时，
+       价格追踪器可能已经获取到新市场的价格（新周期刚开始时UP价格通常较低）
+    4. 导致使用错误的价格（0.0950）计算PnL
+    
+    修复方案：
+    1. 修改 `_close_all_positions()` 方法：
+       - 添加 `use_prices` 参数，允许传入指定价格
+       - 优先使用传入的价格（旧市场最后价格）
+    
+    2. 修改 `_reset_for_new_period()` 方法：
+       - 在关闭持仓前，保存当前价格追踪器中的价格
+       - 将这些价格传递给 `_close_all_positions()`
+       - 确保使用旧市场的最后价格计算PnL
+    
+    修改的文件：
+    - strategies/rebound.py

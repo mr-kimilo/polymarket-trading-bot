@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================================
 REM Polymarket Data Monitor - Background Service
 REM 

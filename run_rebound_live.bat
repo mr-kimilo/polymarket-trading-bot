@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================
 REM  Rebound Strategy - LIVE TRADING Mode
 REM  真实交易模式 - 请谨慎使用！

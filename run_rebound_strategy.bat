@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM ============================================================================
 REM Rebound Strategy Runner - Simulation Mode
 REM 

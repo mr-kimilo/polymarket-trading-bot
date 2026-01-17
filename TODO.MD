@@ -440,3 +440,44 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     **验证**：
     - size=13.636363... → 13.64（2位小数）✅
     - maker_amount=3.0008（4位小数）✅
+
+38. ✅ 修复价格 tick size 问题：`Price (0.145) breaks minimum tick size rule: 0.01`
+    
+    **问题分析**：
+    - Polymarket 要求价格必须是 0.01 的倍数（最小 tick size）
+    - 原代码中 `buy_price = current_price + 0.02`，如果 `current_price=0.125`，则 `buy_price=0.145`
+    - 0.145 不是 0.01 的倍数，导致订单被拒绝
+    
+    **解决方案**（`src/signer.py`）：
+    - 将价格四舍五入到 2 位小数（即 0.01 的倍数）
+    - `rounded_price = round(self.price, 2)`
+    - 同时更新 `self.price` 以保持一致性
+    
+    **验证**：
+    - 0.145 → 0.14 ✅
+    - 0.125 → 0.12 ✅
+    - 0.175 → 0.17 ✅
+
+39. ✅ 修复费率问题：`invalid fee rate (0), current market's taker fee: 1000`
+    
+    **问题分析**：
+    - BTC UP/DOWN 15分钟市场的 taker fee 是 1000 基点（10%）
+    - 原代码默认使用 fee_rate_bps=0，被 API 拒绝
+    
+    **解决方案**（`strategies/rebound.py`）：
+    - 在 `place_order` 调用中添加 `fee_rate_bps=1000`
+    
+    **修改内容**：
+    ```python
+    result = await self.bot.place_order(
+        token_id=token_id,
+        price=buy_price,
+        size=size,
+        side="BUY",
+        fee_rate_bps=1000  # 10% taker fee for BTC 15m markets
+    )
+    ```
+    
+    **注意**：
+    - 1000 bps = 10% 费率
+    - 这是 BTC 15分钟市场特有的费率，其他市场可能不同

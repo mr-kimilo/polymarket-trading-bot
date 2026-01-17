@@ -77,11 +77,18 @@ class Order:
             self.nonce = int(time.time())
 
         # Round to proper precision before converting to blockchain amounts
-        # Polymarket requires: taker_amount max 2 decimals, maker_amount max 4 decimals
-        # Round size to 2 decimals first (this affects taker_amount precision)
+        # Polymarket requires:
+        # - Price must be multiple of 0.01 (minimum tick size)
+        # - taker_amount max 2 decimals
+        # - maker_amount max 4 decimals
+        
+        # Round price to 0.01 (minimum tick size)
+        rounded_price = round(self.price, 2)
+        # Round size to 2 decimals (for taker_amount precision)
         rounded_size = round(self.size, 2)
-        # Round price to 4 decimals (this affects maker_amount precision)  
-        rounded_price = round(self.price, 4)
+        
+        # Store the rounded price for use in order
+        self.price = rounded_price
         
         # Convert to integers for blockchain (USDC has 6 decimals)
         self.taker_amount = str(int(rounded_size * 10**USDC_DECIMALS))

@@ -419,11 +419,13 @@ class ReboundStrategy:
             buy_price = min(current_price + 0.02, 0.99)
             self.log(f"[LIVE] Placing order: BUY {side.upper()} @ {buy_price:.4f}, size={size:.2f}", "trade")
             
+            # BTC UP/DOWN 15-minute markets have 10% taker fee (1000 bps)
             result = await self.bot.place_order(
                 token_id=token_id,
                 price=buy_price,
                 size=size,
-                side="BUY"
+                side="BUY",
+                fee_rate_bps=1000  # 10% taker fee for BTC 15m markets
             )
             
             if result.success:

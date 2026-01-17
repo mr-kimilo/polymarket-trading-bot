@@ -481,3 +481,27 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     **注意**：
     - 1000 bps = 10% 费率
     - 这是 BTC 15分钟市场特有的费率，其他市场可能不同
+
+40. ✅ 从rebound.log看出sign还有问题，根据这个链接 https://docs.polymarket.com/quickstart/first-order，我的钱包是浏览器钱包
+type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new Wallet(process.env.PRIVATE_KEY);我是否需要配置钱包私匙？ 
+修改之后，用测试脚本直接下个单，看看能否成功？
+
+    **问题分析**：
+    - 之前的 `invalid signature` 错误是因为 `feeRateBps` 在 API 订单中硬编码为 "0"
+    - 应该使用 `order.fee_rate_bps` 的实际值
+    
+    **配置说明**：
+    - GNOSIS_SAFE (signature_type=2) 是正确的配置
+    - 需要的环境变量：
+      - `POLY_PRIVATE_KEY`: 浏览器钱包的私钥（用于签名）
+      - `POLY_SAFE_ADDRESS`: Polymarket 代理钱包地址
+    - Signer address 和 Safe address 应该不同（这是正常的）
+    
+    **修复内容**（`src/signer.py`）：
+    - 将 `"feeRateBps": "0"` 改为 `"feeRateBps": str(order.fee_rate_bps)`
+    
+    **测试结果**：
+    - 订单成功提交！✅
+    - Status: matched
+    - Bot 正确初始化，L2 API credentials 成功派生
+    - 签名验证通过，订单被 Polymarket 接受

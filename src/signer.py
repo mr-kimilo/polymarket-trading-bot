@@ -322,7 +322,7 @@ class OrderSigner:
                 "takerAmount": str(int(order.taker_amount)),
                 "expiration": "0",
                 "nonce": "0",
-                "feeRateBps": "0",
+                "feeRateBps": str(order.fee_rate_bps),
                 "side": order.side,  # "BUY" or "SELL" as string
                 "signatureType": order.signature_type,
                 "signature": signature,

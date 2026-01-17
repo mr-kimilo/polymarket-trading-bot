@@ -114,7 +114,8 @@ class ApiClient(ThreadLocalSessionMixin):
         endpoint: str,
         data: Optional[Any] = None,
         headers: Optional[Dict] = None,
-        params: Optional[Dict] = None
+        params: Optional[Dict] = None,
+        raw_data: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Make HTTP request with error handling.
@@ -122,9 +123,10 @@ class ApiClient(ThreadLocalSessionMixin):
         Args:
             method: HTTP method (GET, POST, etc.)
             endpoint: API endpoint
-            data: Request body data
+            data: Request body data (will be JSON serialized)
             headers: Additional headers
             params: Query parameters
+            raw_data: Pre-serialized request body (used instead of data if provided)
 
         Returns:
             Response JSON data
@@ -148,15 +150,28 @@ class ApiClient(ThreadLocalSessionMixin):
                         params=params, timeout=self.timeout
                     )
                 elif method.upper() == "POST":
-                    response = session.post(
-                        url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
-                    )
+                    # Use raw_data if provided (already serialized), otherwise use json=data
+                    if raw_data is not None:
+                        response = session.post(
+                            url, headers=request_headers,
+                            data=raw_data, params=params, timeout=self.timeout
+                        )
+                    else:
+                        response = session.post(
+                            url, headers=request_headers,
+                            json=data, params=params, timeout=self.timeout
+                        )
                 elif method.upper() == "DELETE":
-                    response = session.delete(
-                        url, headers=request_headers,
-                        json=data, params=params, timeout=self.timeout
-                    )
+                    if raw_data is not None:
+                        response = session.delete(
+                            url, headers=request_headers,
+                            data=raw_data, params=params, timeout=self.timeout
+                        )
+                    else:
+                        response = session.delete(
+                            url, headers=request_headers,
+                            json=data, params=params, timeout=self.timeout
+                        )
                 else:
                     raise ApiError(f"Unsupported method: {method}")
 
@@ -165,6 +180,13 @@ class ApiClient(ThreadLocalSessionMixin):
 
             except requests.exceptions.RequestException as e:
                 last_error = e
+                # Try to get more error details from response
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        error_detail = e.response.json()
+                        last_error = f"{e} - {error_detail}"
+                    except Exception:
+                        pass
                 if attempt < self.retry_count - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
 
@@ -196,6 +218,7 @@ class ClobClient(ApiClient):
         chain_id: int = 137,
         signature_type: int = 2,
         funder: str = "",
+        signer_address: str = "",
         api_creds: Optional[ApiCredentials] = None,
         builder_creds: Optional[BuilderConfig] = None,
         timeout: int = 30
@@ -208,6 +231,7 @@ class ClobClient(ApiClient):
             chain_id: Chain ID (137 for Polygon mainnet)
             signature_type: Signature type (2 = Gnosis Safe)
             funder: Funder/Safe address
+            signer_address: Signer's EOA address (for L2 authentication)
             api_creds: User API credentials (optional)
             builder_creds: Builder credentials for attribution (optional)
             timeout: Request timeout
@@ -217,6 +241,7 @@ class ClobClient(ApiClient):
         self.chain_id = chain_id
         self.signature_type = signature_type
         self.funder = funder
+        self.signer_address = signer_address or funder  # Default to funder if not provided
         self.api_creds = api_creds
         self.builder_creds = builder_creds
 
@@ -282,7 +307,7 @@ class ClobClient(ApiClient):
                 ).hexdigest()
 
             headers.update({
-                "POLY_ADDRESS": self.funder,
+                "POLY_ADDRESS": self.signer_address,
                 "POLY_API_KEY": self.api_creds.api_key,
                 "POLY_TIMESTAMP": timestamp,
                 "POLY_PASSPHRASE": self.api_creds.passphrase,
@@ -379,6 +404,38 @@ class ClobClient(ApiClient):
     def set_api_creds(self, creds: ApiCredentials) -> None:
         """Set API credentials for authenticated requests."""
         self.api_creds = creds
+
+    def get_neg_risk(self, token_id: str) -> bool:
+        """
+        Check if a token/market is neg_risk.
+
+        Neg_risk markets use a different exchange contract for signing.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            True if market is neg_risk, False otherwise
+        """
+        # Use cache if available
+        if not hasattr(self, '_neg_risk_cache'):
+            self._neg_risk_cache = {}
+
+        if token_id in self._neg_risk_cache:
+            return self._neg_risk_cache[token_id]
+
+        try:
+            result = self._request(
+                "GET",
+                "/neg-risk",
+                params={"token_id": token_id}
+            )
+            neg_risk = result.get("neg_risk", False)
+            self._neg_risk_cache[token_id] = neg_risk
+            return neg_risk
+        except Exception:
+            # Default to False if we can't determine
+            return False
 
     def get_order_book(self, token_id: str) -> Dict[str, Any]:
         """
@@ -490,7 +547,7 @@ class ClobClient(ApiClient):
         Submit a signed order.
 
         Args:
-            signed_order: Order with signature
+            signed_order: Order with signature (from OrderSigner.sign_order())
             order_type: Order type (GTC, GTD, FOK)
 
         Returns:
@@ -498,24 +555,21 @@ class ClobClient(ApiClient):
         """
         endpoint = "/order"
 
-        # Build request body
+        # Build request body - order should already be in API format with signature inside
         body = {
             "order": signed_order.get("order", signed_order),
-            "owner": self.funder,
+            "owner": self.api_creds.api_key if self.api_creds else self.funder,
             "orderType": order_type,
         }
 
-        # Add signature
-        if "signature" in signed_order:
-            body["signature"] = signed_order["signature"]
-
-        body_json = json.dumps(body, separators=(',', ':'))
+        # Serialize once and use for both signing and sending
+        body_json = json.dumps(body, separators=(',', ':'), ensure_ascii=False)
         headers = self._build_headers("POST", endpoint, body_json)
 
         return self._request(
             "POST",
             endpoint,
-            data=body,
+            raw_data=body_json,
             headers=headers
         )
 

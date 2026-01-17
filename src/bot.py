@@ -245,12 +245,15 @@ class TradingBot:
 
     def _init_clients(self) -> None:
         """Initialize API clients."""
-        # CLOB client
+        # CLOB client - use signer address for L2 authentication if available
+        signer_address = self.signer.address if self.signer else self.config.safe_address
+        
         self.clob_client = ClobClient(
             host=self.config.clob.host,
             chain_id=self.config.clob.chain_id,
             signature_type=self.config.clob.signature_type,
             funder=self.config.safe_address,
+            signer_address=signer_address,
             api_creds=self._api_creds,
             builder_creds=self.config.builder if self.config.use_gasless else None,
         )
@@ -321,8 +324,14 @@ class TradingBot:
                 fee_rate_bps=fee_rate_bps,
             )
 
-            # Sign order
-            signed = signer.sign_order(order)
+            # Check if market is neg_risk (uses different exchange contract)
+            neg_risk = await self._run_in_thread(
+                self.clob_client.get_neg_risk,
+                token_id
+            )
+
+            # Sign order with correct exchange contract
+            signed = signer.sign_order(order, neg_risk=neg_risk)
 
             # Submit to CLOB
             response = await self._run_in_thread(

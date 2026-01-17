@@ -329,3 +329,55 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - 5秒确认倒计时（可按Ctrl+C取消）
     - 检查环境变量是否配置
     - 订单记录到数据库（is_simulated=False）
+33. ✅ 运行run_rebound_live 报错，检查log，rebound.log 解决问题。
+    
+    问题分析：
+    从 rebound.log 发现错误：
+    - 401 Unauthorized 错误，然后是 400 Bad Request "invalid signature"
+    - 订单签名验证失败
+    
+    根本原因（多层问题）：
+    1. **EIP-712签名实现不正确**：
+       - 原实现使用 `eth_account.messages.encode_typed_data` 
+       - Polymarket官方SDK使用 `poly_eip712_structs` 库
+       - 两种方法生成的签名不同
+    
+    2. **Order struct名称错误**：
+       - 定义在函数内部的类名为 "OrderStruct"
+       - 实际应该是 "Order"（EIP-712类型名称是hash的一部分）
+    
+    3. **neg_risk市场未正确处理**：
+       - 测试用的市场是 neg_risk=True 的市场
+       - neg_risk市场需要使用不同的交易所合约地址签名
+       - 普通市场：0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E
+       - neg_risk市场：0xC5d563A36AE78145C45a50134d48A1215220f80a
+    
+    解决方案：
+    1. **重写签名逻辑** (`src/signer.py`)：
+       - 使用 `poly_eip712_structs` 库（与官方SDK一致）
+       - 在函数内部定义 `class Order(EIP712Struct)` 确保名称正确
+       - 使用 `Account._sign_hash(struct_hash, key)` 直接签名哈希
+       - 添加 `neg_risk` 参数支持不同交易所合约
+    
+    2. **添加neg_risk检测** (`src/client.py`)：
+       - 新增 `get_neg_risk(token_id)` 方法
+       - 调用 Polymarket API `/neg-risk?token_id=xxx`
+       - 添加缓存避免重复请求
+    
+    3. **更新下单流程** (`src/bot.py`)：
+       - `place_order()` 方法自动检测 neg_risk
+       - 将 neg_risk 参数传递给 `sign_order()`
+    
+    4. **添加依赖** (`requirements.txt`)：
+       - 新增 `poly-eip712-structs>=1.0.0`
+    
+    修改的文件：
+    - src/signer.py: 重写sign_order方法
+    - src/client.py: 添加get_neg_risk方法
+    - src/bot.py: 更新place_order方法
+    - requirements.txt: 添加poly-eip712-structs
+    - test_markets.py: 更新测试脚本
+    
+    验证：
+    - test_markets.py 测试通过，订单成功提交
+    - 订单状态显示 "live"

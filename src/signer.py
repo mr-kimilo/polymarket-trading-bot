@@ -32,6 +32,10 @@ from eth_utils import to_checksum_address
 # USDC has 6 decimal places
 USDC_DECIMALS = 6
 
+# Polymarket CTF Exchange contract addresses on Polygon
+CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+NEG_RISK_CTF_EXCHANGE_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
 
 @dataclass
 class Order:
@@ -97,11 +101,19 @@ class OrderSigner:
         domain: EIP-712 domain separator
     """
 
-    # Polymarket CLOB EIP-712 domain
-    DOMAIN = {
+    # Polymarket CLOB EIP-712 domain for authentication
+    AUTH_DOMAIN = {
         "name": "ClobAuthDomain",
         "version": "1",
         "chainId": 137,  # Polygon mainnet
+    }
+    
+    # Polymarket CTF Exchange EIP-712 domain for orders
+    ORDER_DOMAIN = {
+        "name": "Polymarket CTF Exchange",
+        "version": "1",
+        "chainId": 137,  # Polygon mainnet
+        "verifyingContract": CTF_EXCHANGE_ADDRESS,
     }
 
     # Order type definition for EIP-712
@@ -205,7 +217,7 @@ class OrderSigner:
         }
 
         signable = encode_typed_data(
-            domain_data=self.DOMAIN,
+            domain_data=self.AUTH_DOMAIN,
             message_types=auth_types,
             message_data=message_data
         )
@@ -213,12 +225,13 @@ class OrderSigner:
         signed = self.wallet.sign_message(signable)
         return "0x" + signed.signature.hex()
 
-    def sign_order(self, order: Order) -> Dict[str, Any]:
+    def sign_order(self, order: Order, neg_risk: bool = False) -> Dict[str, Any]:
         """
-        Sign a Polymarket order.
+        Sign a Polymarket order using the same approach as official SDK.
 
         Args:
             order: Order instance to sign
+            neg_risk: Whether this is a neg-risk market (uses different exchange contract)
 
         Returns:
             Dictionary containing order and signature
@@ -227,43 +240,83 @@ class OrderSigner:
             SignerError: If signing fails
         """
         try:
-            # Build order message for EIP-712
-            order_message = {
-                "salt": 0,
+            from poly_eip712_structs import make_domain, EIP712Struct, Address, Uint
+            from eth_utils import keccak
+            import random
+            
+            # Define Order struct (must be named "Order" exactly to match SDK)
+            class Order(EIP712Struct):
+                salt = Uint(256)
+                maker = Address()
+                signer = Address()
+                taker = Address()
+                tokenId = Uint(256)
+                makerAmount = Uint(256)
+                takerAmount = Uint(256)
+                expiration = Uint(256)
+                nonce = Uint(256)
+                feeRateBps = Uint(256)
+                side = Uint(8)
+                signatureType = Uint(8)
+            
+            # Generate a random salt for the order
+            salt = random.randint(0, 2**32 - 1)
+            
+            # Use correct exchange contract for domain
+            exchange_address = NEG_RISK_CTF_EXCHANGE_ADDRESS if neg_risk else CTF_EXCHANGE_ADDRESS
+            
+            # Create domain using same method as official SDK
+            domain = make_domain(
+                name="Polymarket CTF Exchange",
+                version="1",
+                chainId=str(137),
+                verifyingContract=exchange_address,
+            )
+            
+            # Create order struct (using local Order class, not the module-level Order dataclass)
+            order_struct = Order(
+                salt=salt,
+                maker=to_checksum_address(order.maker),
+                signer=self.address,
+                taker="0x0000000000000000000000000000000000000000",
+                tokenId=int(order.token_id),
+                makerAmount=int(order.maker_amount),
+                takerAmount=int(order.taker_amount),
+                expiration=0,
+                nonce=0,
+                feeRateBps=order.fee_rate_bps,
+                side=order.side_value,
+                signatureType=order.signature_type,
+            )
+            
+            # Create struct hash same way as official SDK
+            struct_hash = "0x" + keccak(order_struct.signable_bytes(domain=domain)).hex()
+            
+            # Sign the struct hash directly (same as official SDK - using _sign_hash)
+            # This signs the hash as-is, not as a human-readable message
+            signed = Account._sign_hash(struct_hash, self.wallet.key)
+            signature = "0x" + signed.signature.hex()
+            
+            # Build API-compatible order format (uses string types like official SDK)
+            api_order = {
+                "salt": salt,
                 "maker": to_checksum_address(order.maker),
                 "signer": self.address,
                 "taker": "0x0000000000000000000000000000000000000000",
-                "tokenId": int(order.token_id),
-                "makerAmount": int(order.maker_amount),
-                "takerAmount": int(order.taker_amount),
-                "expiration": 0,
-                "nonce": order.nonce,
-                "feeRateBps": order.fee_rate_bps,
-                "side": order.side_value,
+                "tokenId": str(order.token_id),
+                "makerAmount": str(int(order.maker_amount)),
+                "takerAmount": str(int(order.taker_amount)),
+                "expiration": "0",
+                "nonce": "0",
+                "feeRateBps": "0",
+                "side": order.side,  # "BUY" or "SELL" as string
                 "signatureType": order.signature_type,
+                "signature": signature,
             }
 
-            # Sign the order using new API format
-            signable = encode_typed_data(
-                domain_data=self.DOMAIN,
-                message_types=self.ORDER_TYPES,
-                message_data=order_message
-            )
-
-            signed = self.wallet.sign_message(signable)
-
             return {
-                "order": {
-                    "tokenId": order.token_id,
-                    "price": order.price,
-                    "size": order.size,
-                    "side": order.side,
-                    "maker": order.maker,
-                    "nonce": order.nonce,
-                    "feeRateBps": order.fee_rate_bps,
-                    "signatureType": order.signature_type,
-                },
-                "signature": "0x" + signed.signature.hex(),
+                "order": api_order,
+                "signature": signature,
                 "signer": self.address,
             }
 

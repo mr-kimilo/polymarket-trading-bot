@@ -411,7 +411,14 @@ class ReboundStrategy:
         
         # 如果是真实模式，执行下单
         if not self.config.simulation_mode:
+            # 检查bot是否存在
+            if not self.bot:
+                self.log("Error: Bot not initialized for LIVE trading", "error")
+                return False
+            
             buy_price = min(current_price + 0.02, 0.99)
+            self.log(f"[LIVE] Placing order: BUY {side.upper()} @ {buy_price:.4f}, size={size:.2f}", "trade")
+            
             result = await self.bot.place_order(
                 token_id=token_id,
                 price=buy_price,
@@ -421,9 +428,9 @@ class ReboundStrategy:
             
             if result.success:
                 order.order_id = result.order_id
-                self.log(f"Order placed: {result.order_id}", "success")
+                self.log(f"[LIVE] Order placed successfully: {result.order_id}", "success")
             else:
-                self.log(f"Order failed: {result.message}", "error")
+                self.log(f"[LIVE] Order failed: {result.message}", "error")
                 return False
         else:
             self.log(f"[SIMULATED] Would BUY {side.upper()} @ {current_price:.4f}", "trade")

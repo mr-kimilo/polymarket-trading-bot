@@ -240,13 +240,66 @@ class ReboundStrategy:
         
         return None
     
+    def _fetch_btc_price_chainlink(self) -> Optional[float]:
+        """通过Chainlink获取BTC价格（Polymarket使用的数据源）"""
+        try:
+            from web3 import Web3
+            
+            # Polygon RPC
+            rpc_url = 'https://polygon-rpc.com'
+            w3 = Web3(Web3.HTTPProvider(rpc_url))
+            
+            # Chainlink BTC/USD Price Feed on Polygon
+            # https://docs.chain.link/data-feeds/price-feeds/addresses?network=polygon
+            CHAINLINK_BTC_USD_POLYGON = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
+            
+            # ABI for Chainlink Price Feed
+            PRICE_FEED_ABI = [
+                {
+                    'inputs': [],
+                    'name': 'latestRoundData',
+                    'outputs': [
+                        {'name': 'roundId', 'type': 'uint80'},
+                        {'name': 'answer', 'type': 'int256'},
+                        {'name': 'startedAt', 'type': 'uint256'},
+                        {'name': 'updatedAt', 'type': 'uint256'},
+                        {'name': 'answeredInRound', 'type': 'uint80'}
+                    ],
+                    'stateMutability': 'view',
+                    'type': 'function'
+                },
+                {
+                    'inputs': [],
+                    'name': 'decimals',
+                    'outputs': [{'name': '', 'type': 'uint8'}],
+                    'stateMutability': 'view',
+                    'type': 'function'
+                }
+            ]
+            
+            contract = w3.eth.contract(address=CHAINLINK_BTC_USD_POLYGON, abi=PRICE_FEED_ABI)
+            decimals = contract.functions.decimals().call()
+            round_data = contract.functions.latestRoundData().call()
+            price = round_data[1] / (10 ** decimals)
+            
+            return price
+        except Exception:
+            return None
+    
     def _fetch_btc_price(self) -> Optional[float]:
-        """获取BTC当前价格"""
+        """获取BTC当前价格
+        
+        优先使用Chainlink（Polymarket使用的数据源），
+        如果失败则回退到其他API。
+        """
         import requests
         
-        price = None
+        # 首选：Chainlink（与Polymarket使用相同数据源）
+        price = self._fetch_btc_price_chainlink()
+        if price:
+            return price
         
-        # 尝试CoinGecko
+        # 备用: CoinGecko
         try:
             url = "https://api.coingecko.com/api/v3/simple/price"
             params = {"ids": "bitcoin", "vs_currencies": "usd"}
@@ -254,37 +307,37 @@ class ReboundStrategy:
             if response.status_code == 200:
                 data = response.json()
                 price = data.get("bitcoin", {}).get("usd")
+                if price:
+                    return price
         except Exception:
             pass
         
         # 备用: CoinCap
-        if not price:
-            try:
-                url = "https://api.coincap.io/v2/assets/bitcoin"
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    price_str = data.get("data", {}).get("priceUsd")
-                    if price_str:
-                        price = float(price_str)
-            except Exception:
-                pass
+        try:
+            url = "https://api.coincap.io/v2/assets/bitcoin"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                price_str = data.get("data", {}).get("priceUsd")
+                if price_str:
+                    return float(price_str)
+        except Exception:
+            pass
         
         # 备用: Binance
-        if not price:
-            try:
-                url = "https://api.binance.com/api/v3/ticker/price"
-                params = {"symbol": "BTCUSDT"}
-                response = requests.get(url, params=params, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    price_str = data.get("price")
-                    if price_str:
-                        price = float(price_str)
-            except Exception:
-                pass
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {"symbol": "BTCUSDT"}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                price_str = data.get("price")
+                if price_str:
+                    return float(price_str)
+        except Exception:
+            pass
         
-        return price
+        return None
     
     def _update_btc_price(self) -> None:
         """更新BTC价格"""

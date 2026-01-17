@@ -257,3 +257,35 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     
     修改的文件：
     - strategies/rebound.py
+
+31. ✅ 为什么你获取的btc start的价格和官方的价格不一样。网站的是95,061.74，你的是BTC: Start=$95,084.90
+    
+    问题分析：
+    - 之前代码使用 CoinGecko/CoinCap/Binance 等第三方API获取BTC价格
+    - Polymarket使用 Chainlink BTC/USD 数据流作为官方价格源
+    - 不同数据源的价格会有微小差异（约$20-30）
+    
+    根因发现：
+    - 市场描述明确说明：resolution source is Chainlink BTC/USD data stream
+    - Chainlink在Polygon上有专门的价格预言机合约
+    - 合约地址：`0xc907E116054Ad103354f2D350FD2514433D57F6f`
+    
+    解决方案：
+    在 `strategies/rebound.py` 中：
+    1. 新增 `_fetch_btc_price_chainlink()` 方法：
+       - 使用Web3连接Polygon RPC
+       - 调用Chainlink合约的 `latestRoundData()` 获取价格
+       - 使用 `decimals()` 正确处理小数位数（8位）
+    
+    2. 修改 `_fetch_btc_price()` 方法：
+       - 将Chainlink作为首选数据源
+       - 保留CoinGecko/CoinCap/Binance作为备用
+       - 确保与Polymarket使用相同价格源
+    
+    技术细节：
+    - Polygon RPC: https://polygon-rpc.com
+    - Chainlink ABI: latestRoundData() 返回 (roundId, answer, startedAt, updatedAt, answeredInRound)
+    - 价格计算: answer / (10 ** decimals)
+    
+    依赖：
+    - web3>=6.0.0 (已在requirements.txt中)

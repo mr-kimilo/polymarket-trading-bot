@@ -377,7 +377,66 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - src/bot.py: 更新place_order方法
     - requirements.txt: 添加poly-eip712-structs
     - test_markets.py: 更新测试脚本
-    
+
     验证：
     - test_markets.py 测试通过，订单成功提交
     - 订单状态显示 "live"
+
+35. ✅ 回退到 d227d9c 提交（33.update sign method），通过 chainlink 的速度太慢，回退之后用 chcp 65001 >nul 解决 bat 的编码问题。
+    
+    **操作步骤**：
+    1. 执行 `git reset --hard d227d9c` 回退到任务33的提交
+       - 删除了 chainlink RTDS WebSocket 相关代码（lib/chainlink_price.py）
+       - 恢复使用原来的 Polygon Chainlink Price Feed 方式
+    
+    2. 在所有 bat 文件开头添加 `chcp 65001 >nul`
+       - 切换 CMD 代码页到 UTF-8 (Code Page 65001)
+       - 解决中文字符显示乱码问题
+    
+    **修改的文件**：
+    - run_rebound_live.bat: 添加 UTF-8 编码支持
+    - run_rebound_strategy.bat: 添加 UTF-8 编码支持
+    - run_monitor.bat: 添加 UTF-8 编码支持
+    - run_monitor_with_rebound.bat: 添加 UTF-8 编码支持
+    - start_monitor_keepawake.bat: 添加 UTF-8 编码支持
+    - start_silent_monitor.bat: 添加 UTF-8 编码支持
+    - start_background_monitors.bat: 添加 UTF-8 编码支持
+    - start_all_monitors.bat: 添加 UTF-8 编码支持
+    
+    **提交信息**：
+    - Commit: Fix: Add UTF-8 encoding support to all bat files (chcp 65001)
+    - 解决了 CMD 中文乱码问题（如：鍚姩 Rebound 鐪熷疄浜ゆ槗绛栫暐 → 启动 Rebound 真实交易策略）
+    
+    **原因说明**：
+    - Chainlink RTDS WebSocket 响应速度较慢（需要等待1-2秒才能获取价格）
+    - Polygon Chainlink Price Feed 虽然价格稍有延迟，但响应速度更快
+    - 对于交易策略来说，响应速度比绝对精确度更重要
+
+36. run_rebound_live.bat运行的时候，运行脚本的时候btc价格不应该是15分钟开始价格，而是当前时间段的15分钟开始价格。
+
+37. ✅ 修复订单精度问题：`invalid amounts, the buy orders maker amount supports a max accuracy of 4 decimals, taker amount a max of 2 decimals`
+    
+    **问题分析**：
+    - Polymarket CLOB API 对订单金额有精度要求
+    - `taker_amount`（token数量）最多支持 2 位小数
+    - `maker_amount`（USDC金额）最多支持 4 位小数
+    - 原代码直接使用浮点数计算，导致精度超出限制
+    
+    **解决方案**（`src/signer.py`）：
+    - 在计算 `taker_amount` 前，先将 `size` 四舍五入到 2 位小数
+    - 在计算 `maker_amount` 前，先将 `price` 四舍五入到 4 位小数
+    - 最终 `maker_amount = round(size * price, 4)` 确保不超过 4 位小数
+    
+    **修改内容**：
+    ```python
+    # Round to proper precision before converting
+    rounded_size = round(self.size, 2)
+    rounded_price = round(self.price, 4)
+    
+    self.taker_amount = str(int(rounded_size * 10**USDC_DECIMALS))
+    self.maker_amount = str(int(round(rounded_size * rounded_price, 4) * 10**USDC_DECIMALS))
+    ```
+    
+    **验证**：
+    - size=13.636363... → 13.64（2位小数）✅
+    - maker_amount=3.0008（4位小数）✅

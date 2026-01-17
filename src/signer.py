@@ -76,9 +76,16 @@ class Order:
         if self.nonce is None:
             self.nonce = int(time.time())
 
-        # Convert to integers for blockchain
-        self.maker_amount = str(int(self.size * self.price * 10**USDC_DECIMALS))
-        self.taker_amount = str(int(self.size * 10**USDC_DECIMALS))
+        # Round to proper precision before converting to blockchain amounts
+        # Polymarket requires: taker_amount max 2 decimals, maker_amount max 4 decimals
+        # Round size to 2 decimals first (this affects taker_amount precision)
+        rounded_size = round(self.size, 2)
+        # Round price to 4 decimals (this affects maker_amount precision)  
+        rounded_price = round(self.price, 4)
+        
+        # Convert to integers for blockchain (USDC has 6 decimals)
+        self.taker_amount = str(int(rounded_size * 10**USDC_DECIMALS))
+        self.maker_amount = str(int(round(rounded_size * rounded_price, 4) * 10**USDC_DECIMALS))
         self.side_value = 0 if self.side == "BUY" else 1
 
 

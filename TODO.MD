@@ -122,3 +122,110 @@ Min  Time        UP      UP%    DOWN    DOWN% |   BTC Start     BTC End     BTC 
     - 修复内容：将 `orderbook.py` 中的 `main()` 改为 `sys.exit(main())`
     - 新增 `run_monitor.bat`：简化的启动脚本，逻辑更清晰，避免复杂的 setlocal 问题
     - 验证：运行 `run_monitor.bat`，观察5分钟后是否能正常重启
+
+27. ✅ 环境变量加入了数据库信息，我需要增加新的功能
+    1. ✅ 创建新的交易策略，在每个BTC 15分钟,把15分钟分为3段，A:15-10,B:10-5，C:5-0，当这种情况出现，在A段，价格在1分钟内，UP/DOWN快速下跌到30以下，BTC 价格下跌在50以内的，下单持有到最后。
+    2. ✅ 记录1下单成功之后放入订单表rebound_orders，15分钟结束之后更新盈亏。
+    3. ✅ 创建新的数据库模块，用于更新表
+    4. ✅ 检查现有的策略，在不改变现有策略的基础下，创新新策略，并且两个策略互不影响。
+    5. ✅ 设置一个模拟标记，标记开启的时候不真实下单，标记关闭的时候真实下单，模拟标记用于回测，当这种策略有胜率的时候再开启真实下单。
+    
+    解决：
+    - 创建数据库模块 `src/database.py`：
+      - PostgreSQL 连接管理（使用 psycopg2）
+      - `ReboundOrder` 数据类：存储订单信息
+      - `Database` 类：CRUD 操作
+      - 自动创建 `rebound_orders` 表
+      - 支持订单统计（胜率、总PnL等）
+      
+    - 创建 Rebound 策略 `strategies/rebound.py`：
+      - `ReboundConfig`: 策略配置（coin, size, price_drop_threshold, btc_drop_max, simulation_mode等）
+      - `ReboundStrategy`: 完整的策略实现
+      - 时间段检测：A(15-10分), B(10-5分), C(5-0分)
+      - 快速下跌检测：1分钟窗口内价格跌破阈值
+      - BTC价格条件检查
+      - 自动在周期结束时平仓并计算盈亏
+      
+    - 创建运行脚本 `apps/run_rebound.py`：
+      - 命令行参数支持
+      - `--simulation` 模拟模式（默认）
+      - `--live` 真实交易模式
+      - LIVE模式下有5秒倒计时确认
+      
+    - 更新 `strategies/__init__.py`：导出新策略
+    
+    使用方法：
+    ```bash
+    # 模拟模式（默认，安全）
+    python apps/run_rebound.py --coin BTC
+    
+    # 真实交易模式（需要配置私钥）
+    python apps/run_rebound.py --coin BTC --live
+    
+    # 自定义参数
+    python apps/run_rebound.py --coin BTC --size 20 --drop-threshold 0.25 --btc-drop-max 100
+    ```
+    
+    数据库配置（.env）：
+    ```
+    DATABASE_HOST=127.0.0.1
+    DATABASE_PORT=5432
+    DATABASE_NAME=poly_market
+    DATABASE_USER=sniper_user
+    DATABASE_PASSWORD=sniper_pass_dev
+    ```
+    
+    注意：需要安装 psycopg2: `pip install psycopg2-binary`
+
+28. ✅ 运行pip install psycopg2-binary 并测试模拟信号功能。
+    解决：
+    - 已安装 psycopg2-binary
+    - 数据库测试通过（test_database.py）：
+      - 环境变量正确配置 ✅
+      - 数据库连接成功 ✅
+      - 创建订单成功 ✅
+      - 读取订单成功 ✅
+      - 更新订单成功 ✅
+      - 统计信息正确 ✅
+    - Rebound策略模拟模式测试通过：
+      - WebSocket连接成功 ✅
+      - 时间段检测正确（A/B/C段）✅
+      - BTC价格获取正确 ✅
+      - UP/DOWN价格获取正确 ✅
+      - 数据库统计显示正确 ✅
+    - 修复：database.py中添加表结构检查，如果旧表结构不兼容会自动重建
+
+29. ✅ 将run_rebound.py --coin BTC 功能加入run_monitor.bat和start_monitor_keepawake.bat，让监控服务启动的时候，可以模拟下单。
+    如果需要，创建对应的bat文件。
+    
+    解决：
+    创建了以下批处理文件：
+    
+    1. `run_monitor_with_rebound.bat` - 数据监控 + Rebound策略
+       - 启动keep-awake进程
+       - 在当前窗口运行数据监控（orderbook.py）
+       - 在新窗口运行Rebound策略（simulation模式）
+       - 支持自动重启
+    
+    2. `start_all_monitors.bat` - 完整监控套件
+       - Keep-Awake（防止系统休眠）
+       - 数据监控（保存JSON到files/）
+       - Rebound策略（模拟模式，记录到数据库）
+       - 自动重启和崩溃恢复
+    
+    3. `run_rebound_strategy.bat` - 单独运行Rebound策略
+       - 只运行Rebound策略
+       - 支持崩溃重启
+       - 方便独立测试
+    
+    使用方法：
+    ```
+    # 完整监控（推荐）
+    双击 start_all_monitors.bat
+    
+    # 数据监控+Rebound
+    双击 run_monitor_with_rebound.bat
+    
+    # 只运行Rebound策略
+    双击 run_rebound_strategy.bat
+    ```

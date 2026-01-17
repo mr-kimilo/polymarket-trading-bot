@@ -25,6 +25,9 @@ websockets>=12.0               # WebSocket client for market data
 # Terminal UI
 rich>=13.0.0                   # Rich terminal formatting for TUI
 
+# Database
+psycopg2-binary>=2.9.0         # PostgreSQL database adapter
+
 # =============================================================================
 # Polymarket API Clients (Optional - for advanced usage)
 # =============================================================================

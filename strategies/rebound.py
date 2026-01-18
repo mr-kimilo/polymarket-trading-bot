@@ -49,12 +49,17 @@ from src.database import ReboundOrder, OrderStatus, get_database
 class ReboundConfig:
     """Rebound策略配置"""
     
+    # 策略类型
+    # "1": 策略1 - A段, UP/DOWN<30%, BTC下跌<50
+    # "2": 策略2 - C段, UP/DOWN<15%, BTC下跌<30
+    strategy_type: str = "1"
+    
     # 基础配置
     coin: str = "BTC"
     size: float = 10.0  # USDC交易金额
     
-    # 触发条件
-    price_drop_threshold: float = 0.30  # UP/DOWN价格跌破30%
+    # 触发条件（默认值为策略1的参数，会在__post_init__中根据strategy_type调整）
+    price_drop_threshold: float = 0.30  # UP/DOWN价格跌破阈值
     btc_drop_max: float = 50.0  # BTC最大下跌幅度（美元）
     rapid_drop_window: int = 60  # 快速下跌检测窗口（秒）
     
@@ -66,8 +71,21 @@ class ReboundConfig:
     segment_c_start: int = 5   # C段开始
     segment_c_end: int = 0     # C段结束
     
-    # 只在A段触发交易
+    # 活跃时间段（会在__post_init__中根据strategy_type设置）
     active_segments: List[str] = field(default_factory=lambda: ["A"])
+    
+    def __post_init__(self):
+        """根据策略类型设置默认参数"""
+        if self.strategy_type == "2":
+            # 策略2: C段, UP/DOWN<15%, BTC下跌<30
+            self.price_drop_threshold = 0.15
+            self.btc_drop_max = 30.0
+            self.active_segments = ["C"]
+        elif self.strategy_type == "1":
+            # 策略1: A段, UP/DOWN<30%, BTC下跌<50
+            self.price_drop_threshold = 0.30
+            self.btc_drop_max = 50.0
+            self.active_segments = ["A"]
     
     # 模拟模式
     simulation_mode: bool = True  # 默认启用模拟模式

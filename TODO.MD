@@ -548,5 +548,35 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
     - `py-builder-relayer-client`: Polymarket官方Relayer客户端
     - `py-builder-signing-sdk`: Builder签名SDK
 
-42. 阅读trading-rules.md，目前回弹策略使用的是策略1，现在增加一个策略选项配置:strategy.type,我已经配置成2，修改代码
+42. ✅ 阅读trading-rules.md，目前回弹策略使用的是策略1，现在增加一个策略选项配置:strategy.type,我已经配置成2，修改代码
 当我配置strategy.type=2的时候执行trading-rules.md策略2.
+
+    **需求说明**：
+    - 策略1: 在A段(15-10分钟)，UP/DOWN<30%，BTC下跌<$50
+    - 策略2: 在C段(5-0分钟)，UP/DOWN<15%，BTC下跌<$30
+    
+    **实现方案**：
+    1. 在 `config.yaml` 中添加 `strategy.type` 配置项（已配置为 "2"）
+    2. 修改 `ReboundConfig` 类添加 `strategy_type` 字段和 `__post_init__` 方法
+    3. 在 `apps/run_rebound.py` 中添加 `load_strategy_type_from_config()` 函数
+    4. 根据策略类型自动设置对应的参数
+    
+    **修改的文件**：
+    - `strategies/rebound.py`: 
+      - 添加 `strategy_type` 字段到 `ReboundConfig`
+      - 添加 `__post_init__` 方法根据策略类型设置默认参数
+    - `apps/run_rebound.py`:
+      - 添加 `load_strategy_type_from_config()` 函数从 config.yaml 读取策略类型
+      - 添加 `--strategy-type` 命令行参数可覆盖配置
+      - 根据策略类型设置默认阈值和时间段
+    
+    **配置示例** (`config.yaml`):
+    ```yaml
+    strategy:
+      type: "2"  # Options: "1", "30% BTC 50 rebound in A";"2","15% BTC 30 rebound in C"
+    ```
+    
+    **验证结果**：
+    - ✅ 策略1配置: threshold=0.30, btc_drop=50.0, segments=['A']
+    - ✅ 策略2配置: threshold=0.15, btc_drop=30.0, segments=['C']
+    - ✅ 从config.yaml读取strategy.type=2正确

@@ -26,6 +26,13 @@ builder:
   api_secret: ""
   api_passphrase: ""
 
+# Auto-Claim Configuration
+# Automatically claim winning positions when balance is low
+auto_claim:
+  enabled: true                # Enable/disable auto-claim
+  min_balance: 10.0           # Trigger claim when USDC balance < this
+  check_interval: 60          # Check interval in minutes (default: 60)
+
 # Trading Defaults
 default_token_id: ""  # Market token ID to trade
 default_size: 1.0     # Default order size

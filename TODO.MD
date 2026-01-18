@@ -506,5 +506,47 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
     - Bot 正确初始化，L2 API credentials 成功派生
     - 签名验证通过，订单被 Polymarket 接受
 
-41. 阅读trading-rules.md，目前回弹策略使用的是策略1，现在增加一个策略选项配置:strategy.type,我已经配置成2，修改代码
+41. ✅ 阅读poly market的api，是否可以自动claim，这样就可以不用我claim了，程序可以一直运行，如果是，请完成当钱包少于10美元就自动claim。
+    
+    **实现方案**：
+    1. **研究Polymarket API**：
+       - Data API: `https://data-api.polymarket.com/positions?user=xxx&redeemable=true` 获取可redeem的仓位
+       - CTF合约: `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` (redeemPositions函数)
+       - Relayer: 使用官方 `py-builder-relayer-client` 库执行gasless交易
+    
+    2. **创建 `src/auto_claim.py` 模块**：
+       - `AutoClaimer` 类：管理自动claim功能
+       - `get_usdc_balance()`: 获取钱包USDC余额
+       - `get_redeemable_positions(min_value)`: 获取有价值的可redeem仓位
+       - `redeem_position()`: 使用RelayClient执行单个redeem
+       - `redeem_all_positions()`: 批量redeem所有仓位
+       - `check_and_claim()`: 检查余额并自动claim
+    
+    3. **关键技术细节**：
+       - 使用 `py-builder-relayer-client` 和 `py-builder-signing-sdk` 官方库
+       - Builder凭证配置: `POLY_BUILDER_API_KEY`, `POLY_BUILDER_API_SECRET`, `POLY_BUILDER_API_PASSPHRASE`
+       - 正确的函数选择器: `0x01b7037c` (redeemPositions)
+       - 只redeem有价值的仓位（currentValue >= 0.01），过滤输掉的仓位
+    
+    4. **在ReboundStrategy中集成**：
+       - 配置项: `auto_claim.enabled`, `auto_claim.min_balance`, `auto_claim.check_interval`
+       - 每隔 `check_interval` 分钟检查一次
+       - 当余额低于 `min_balance` 时自动claim
+    
+    **测试结果**：
+    - ✅ RelayClient初始化成功
+    - ✅ 成功获取29个可redeem仓位
+    - ✅ 正确过滤出1个有价值的仓位（$10.59）
+    - ✅ 成功执行redeem，钱包余额从$54.09增加到$64.68
+    - ✅ 交易通过Relayer gasless执行
+    
+    **新增文件**：
+    - `src/auto_claim.py`: Auto-claim核心模块
+    - `scripts/test_auto_claim.py`: 测试脚本
+    
+    **新增依赖**：
+    - `py-builder-relayer-client`: Polymarket官方Relayer客户端
+    - `py-builder-signing-sdk`: Builder签名SDK
+
+42. 阅读trading-rules.md，目前回弹策略使用的是策略1，现在增加一个策略选项配置:strategy.type,我已经配置成2，修改代码
 当我配置strategy.type=2的时候执行trading-rules.md策略2.

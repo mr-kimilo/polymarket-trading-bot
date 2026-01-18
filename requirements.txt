@@ -9,6 +9,7 @@
 web3>=6.0.0                    # Polygon RPC interactions
 eth-account>=0.5.0             # Wallet and signing operations
 poly-eip712-structs>=1.0.0     # EIP-712 typed data encoding for order signing
+eth-abi>=4.0.0                 # ABI encoding for contract calls
 
 # Cryptography for private key encryption
 cryptography>=41.0.0           # PBKDF2 + Fernet encryption
@@ -28,6 +29,9 @@ rich>=13.0.0                   # Rich terminal formatting for TUI
 
 # Database
 psycopg2-binary>=2.9.0         # PostgreSQL database adapter
+
+# Polymarket Builder/Relayer (for auto-claim)
+py-builder-relayer-client>=0.0.1  # Gasless transactions via Polymarket Relayer
 
 # =============================================================================
 # Polymarket API Clients (Optional - for advanced usage)

@@ -78,6 +78,11 @@ class ReboundConfig:
     
     # 显示设置
     update_interval: float = 0.5
+    
+    # Auto-claim设置
+    auto_claim_enabled: bool = True  # 是否启用自动claim
+    auto_claim_min_balance: float = 10.0  # 最小余额阈值（USDC）
+    auto_claim_check_interval: int = 300  # 检查间隔（秒，默认5分钟）
 
 
 @dataclass 
@@ -141,6 +146,33 @@ class ReboundStrategy:
         # 市场开始时间
         self._market_start_time: Optional[float] = None
         self._period_start_prices: Dict[str, float] = {}
+        
+        # Auto-claim
+        self._last_claim_check: float = 0
+        self._auto_claimer = None
+        if config.auto_claim_enabled and not config.simulation_mode:
+            self._init_auto_claimer()
+    
+    def _init_auto_claimer(self) -> None:
+        """初始化AutoClaimer"""
+        try:
+            from src.auto_claim import AutoClaimer
+            import os
+            
+            safe_address = os.environ.get("POLY_SAFE_ADDRESS", "")
+            private_key = os.environ.get("POLY_PRIVATE_KEY", "")
+            
+            if safe_address:
+                self._auto_claimer = AutoClaimer(
+                    safe_address=safe_address,
+                    private_key=private_key,
+                    min_balance=self.config.auto_claim_min_balance
+                )
+                self.log(f"AutoClaimer initialized (min balance: ${self.config.auto_claim_min_balance})", "info")
+            else:
+                self.log("AutoClaimer disabled: POLY_SAFE_ADDRESS not set", "warning")
+        except Exception as e:
+            self.log(f"Failed to initialize AutoClaimer: {e}", "error")
     
     @property
     def is_connected(self) -> bool:
@@ -702,6 +734,9 @@ class ReboundStrategy:
                 # 检查触发条件
                 await self._check_trigger_conditions()
                 
+                # 检查auto-claim（仅在真实模式下）
+                await self._check_auto_claim()
+                
                 # 渲染状态
                 self._render_status()
                 
@@ -714,6 +749,45 @@ class ReboundStrategy:
             self._close_all_positions()
             await self.market.stop()
             self._print_summary()
+    
+    async def _check_auto_claim(self) -> None:
+        """检查并执行自动claim"""
+        if not self._auto_claimer:
+            return
+        
+        now = time.time()
+        if now - self._last_claim_check < self.config.auto_claim_check_interval:
+            return
+        
+        self._last_claim_check = now
+        
+        try:
+            # 首先检查余额
+            balance = self._auto_claimer.get_usdc_balance()
+            
+            if balance < self.config.auto_claim_min_balance:
+                self.log(f"Balance ${balance:.2f} < ${self.config.auto_claim_min_balance}, checking for redeemable positions...", "warning")
+                
+                # 获取可redeem的仓位
+                positions = self._auto_claimer.get_redeemable_positions()
+                
+                if positions:
+                    self.log(f"Found {len(positions)} redeemable positions, claiming...", "info")
+                    
+                    for pos in positions:
+                        success = await self._auto_claimer.redeem_position(pos)
+                        if success:
+                            self.log(f"Claimed: {pos.title} ({pos.outcome}) - ${pos.current_value:.2f}", "success")
+                        else:
+                            self.log(f"Failed to claim: {pos.title}", "error")
+                    
+                    # 更新余额显示
+                    new_balance = self._auto_claimer.get_usdc_balance()
+                    self.log(f"New balance: ${new_balance:.2f}", "info")
+                else:
+                    self.log("No redeemable positions found", "info")
+        except Exception as e:
+            self.log(f"Auto-claim error: {e}", "error")
     
     def _print_summary(self) -> None:
         """打印会话统计"""

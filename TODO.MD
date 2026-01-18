@@ -505,3 +505,6 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
     - Status: matched
     - Bot 正确初始化，L2 API credentials 成功派生
     - 签名验证通过，订单被 Polymarket 接受
+
+41. 阅读trading-rules.md，目前回弹策略使用的是策略1，现在增加一个策略选项配置:strategy.type,我已经配置成2，修改代码
+当我配置strategy.type=2的时候执行trading-rules.md策略2.

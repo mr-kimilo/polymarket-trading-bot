@@ -35,16 +35,16 @@ import logging
 import yaml
 from pathlib import Path
 
-# Suppress noisy logs
-logging.getLogger("src.websocket_client").setLevel(logging.WARNING)
-logging.getLogger("src.bot").setLevel(logging.WARNING)
-
-# Auto-load .env file
+# Auto-load .env file early
 from dotenv import load_dotenv
 load_dotenv()
 
-# Add parent directory to path
+# Add parent directory to path early
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Suppress noisy logs
+logging.getLogger("src.websocket_client").setLevel(logging.WARNING)
+logging.getLogger("src.bot").setLevel(logging.WARNING)
 
 from lib.console import Colors
 from src.bot import TradingBot
@@ -109,8 +109,8 @@ def main():
         "--strategy-type",
         type=str,
         default=None,
-        choices=["1", "2"],
-        help="Strategy type: 1=A段/30%%/50USD, 2=C段/15%%/30USD (default: from config.yaml)"
+    choices=["1", "2", "3"],
+    help="Strategy type: 1=A段/30%%/50USD, 2=C段/15%%/30USD, 3=P&L mode (take-profit / stop-loss). Default: from config.yaml"
     )
     parser.add_argument(
         "--live",

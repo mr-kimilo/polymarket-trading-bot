@@ -68,8 +68,8 @@ if %RESTART_COUNT% GTR 1 (
     timeout /t 5 /nobreak > nul
 )
 
-REM Run Rebound Strategy in simulation mode
-.venv\Scripts\python.exe apps/run_rebound.py --coin BTC
+REM Run Rebound Strategy in simulation mode (strategy-type 3: P&L mode)
+.venv\Scripts\python.exe apps/run_rebound.py --coin BTC --strategy-type 3 --simulation --size 1
 
 set EXIT_CODE=%ERRORLEVEL%
 

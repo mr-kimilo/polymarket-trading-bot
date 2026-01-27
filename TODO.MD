@@ -580,3 +580,9 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
     - ✅ 策略1配置: threshold=0.30, btc_drop=50.0, segments=['A']
     - ✅ 策略2配置: threshold=0.15, btc_drop=30.0, segments=['C']
     - ✅ 从config.yaml读取strategy.type=2正确
+
+43.我已经在config.ymal增加了四个个参数，当profit_and_loss的enable是true的时候，第一个take_profit_base，表示检测到订单盈利达到50%的时候，订单表示可以卖的状态，如果是上涨趋势，一直等待上涨，当上涨回退10%，也就是 take_profit_reduce_loss值的时候，sell订单，止盈获取利润。当订单达到c阶段，也就是10-15分钟的时候，还没有止盈，就要看是否需要止损了，如果损失已经大于20%，也就是stop_loss_stage_c的值，那么卖掉订单，止损；否则可以继续等待。修改rebound.py文件，实现strategy的option是3的内容.
+
+44.移除测试脚本，开启模式3.开启模拟模式运行，今晚上用于测试模式3
+45.run_rebound_strategy.bat是否可以启动模式3并运行，修复lint 风格提示
+46.我观察到下单逻辑出问题了，策略3的下单时间应该是和策略1一样，修改代码增加下单逻辑，不影响策略1，而且15分钟只需要A段下一次单。

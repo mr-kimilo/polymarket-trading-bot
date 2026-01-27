@@ -73,6 +73,10 @@ class ReboundConfig:
     
     # 活跃时间段（会在__post_init__中根据strategy_type设置）
     active_segments: List[str] = field(default_factory=lambda: ["A"])
+    # Segments where new orders are allowed (can be different from active_segments which
+    # controls where evaluation/P&L logic runs). By default orders are placed in the same
+    # segments as active_segments, but strategy 3 should only place orders in A.
+    order_segments: List[str] = field(default_factory=lambda: ["A"])
     
     def __post_init__(self):
         """根据策略类型设置默认参数"""
@@ -81,11 +85,21 @@ class ReboundConfig:
             self.price_drop_threshold = 0.15
             self.btc_drop_max = 30.0
             self.active_segments = ["C"]
+            self.order_segments = ["C"]
         elif self.strategy_type == "1":
             # 策略1: A段, UP/DOWN<30%, BTC下跌<50
             self.price_drop_threshold = 0.30
             self.btc_drop_max = 50.0
             self.active_segments = ["A"]
+            self.order_segments = ["A"]
+        elif self.strategy_type == "3":
+            # 策略3: Profit & Loss 模式
+            # 启用 P&L 相关逻辑（take-profit / stop-loss）
+            self.profit_and_loss_enabled = True
+            # 在整个15分钟周期内评估 P&L
+            self.active_segments = ["A", "B", "C"]
+            # But only place new orders during A (same as strategy 1)
+            self.order_segments = ["A"]
     
     # 模拟模式
     simulation_mode: bool = True  # 默认启用模拟模式
@@ -101,6 +115,15 @@ class ReboundConfig:
     auto_claim_enabled: bool = True  # 是否启用自动claim
     auto_claim_min_balance: float = 10.0  # 最小余额阈值（USDC）
     auto_claim_check_interval: int = 300  # 检查间隔（秒，默认5分钟）
+
+    # Profit & Loss (P&L) settings (used by strategy_type == "3")
+    profit_and_loss_enabled: bool = False
+    # fraction (decimal) indicating take-profit base (e.g. 0.5 == +50%)
+    take_profit_base: float = 0.5
+    # fraction (decimal) peak->trough drawdown to trigger take-profit reduce (e.g. 0.1 == 10%)
+    take_profit_reduce_loss: float = 0.1
+    # fraction (decimal) loss threshold in stage C to trigger stop-loss (e.g. 0.2 == 20%)
+    stop_loss_stage_c: float = 0.2
 
 
 @dataclass 
@@ -156,15 +179,16 @@ class ReboundStrategy:
         self.btc_price_start: Optional[float] = None
         self.btc_price_current: Optional[float] = None
         self.last_btc_update: float = 0
-        
         # 当前周期的订单
         self._current_period_orders: List[int] = []  # 数据库订单ID列表
         self._active_positions: Dict[str, Dict] = {}  # side -> position info
-        
+        # P&L tracking: record peak price (highest observed price after entry) per side
+        self._position_peak_price: Dict[str, float] = {}
+
         # 市场开始时间
         self._market_start_time: Optional[float] = None
         self._period_start_prices: Dict[str, float] = {}
-        
+
         # Auto-claim
         self._last_claim_check: float = 0
         self._auto_claimer = None
@@ -497,6 +521,11 @@ class ReboundStrategy:
                 "size": size,
                 "entry_time": time.time()
             }
+            # initialize P&L tracking for strategy_type == "3"
+            if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
+                # record peak at entry and mark TP not yet eligible
+                self._position_peak_price[side] = current_price
+                self._active_positions[side]["_tp_eligible"] = False
             
             mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
             self.log(
@@ -551,10 +580,94 @@ class ReboundStrategy:
                     f"PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET}",
                     "success" if pnl >= 0 else "warning"
                 )
-        
+            # cleanup peak tracker
+            if side in self._position_peak_price:
+                del self._position_peak_price[side]
         # 清空持仓
         self._active_positions.clear()
         self._current_period_orders.clear()
+
+    def _close_position(self, side: str, exit_price: float, reason: str = "") -> None:
+        """Close a single position and update DB/logs."""
+        pos_info = self._active_positions.get(side)
+        if not pos_info:
+            return
+
+        entry_price = pos_info.get("entry_price", 0)
+        size = pos_info.get("size", 0)
+        db_id = pos_info.get("db_id")
+
+        if exit_price > 0 and entry_price > 0:
+            pnl = (exit_price - entry_price) * size
+            pnl_percent = (exit_price - entry_price) / entry_price * 100
+
+            if db_id:
+                self.db.update_rebound_order_result(
+                    order_id=db_id,
+                    exit_price=exit_price,
+                    exit_btc_price=self.btc_price_current,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent,
+                    status=OrderStatus.CLOSED.value
+                )
+
+            mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
+            color = Colors.GREEN if pnl >= 0 else Colors.RED
+            self.log(
+                f"[{mode_str}] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
+                "success" if pnl >= 0 else "warning"
+            )
+
+        # cleanup
+        if side in self._position_peak_price:
+            del self._position_peak_price[side]
+        if side in self._active_positions:
+            del self._active_positions[side]
+
+    def _evaluate_positions_for_profit_and_loss(self) -> None:
+        """Evaluate open positions for take-profit or stop-loss rules (strategy 3)."""
+        # For each active position, update peak price and evaluate rules
+        for side, pos in list(self._active_positions.items()):
+            current_price = self.prices.get_current_price(side)
+            if current_price <= 0:
+                continue
+
+            entry = pos.get("entry_price", 0)
+            if entry <= 0:
+                continue
+
+            # update peak
+            peak = self._position_peak_price.get(side, entry)
+            if current_price > peak:
+                peak = current_price
+                self._position_peak_price[side] = peak
+
+            # check take-profit base eligibility
+            # profit_percent as decimal (e.g., 0.5 means +50%)
+            profit_percent = (current_price - entry) / entry
+            if not pos.get("_tp_eligible") and profit_percent >= self.config.take_profit_base:
+                # mark eligible when reached base TP
+                pos["_tp_eligible"] = True
+                self.log(f"Position {side.upper()} reached take_profit_base ({profit_percent:.2%}), eligible for TP", "info")
+
+            # if eligible, wait for pullback from peak by reduce_loss fraction
+            if pos.get("_tp_eligible"):
+                # peak-to-current drawdown fraction
+                if peak > 0:
+                    drawdown = (peak - current_price) / peak
+                    if drawdown >= self.config.take_profit_reduce_loss:
+                        # Sell to take profit
+                        self.log(f"Take-profit trigger for {side.upper()}: peak={peak:.4f}, current={current_price:.4f}, drawdown={drawdown:.2%}", "success")
+                        self._close_position(side, current_price, reason="take_profit")
+                        continue
+
+            # If in stage C and no TP triggered, check stop-loss for stage C
+            segment = self.get_current_segment()
+            if segment == "C":
+                loss_frac = (entry - current_price) / entry
+                if loss_frac >= self.config.stop_loss_stage_c:
+                    self.log(f"Stage C stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
+                    self._close_position(side, current_price, reason="stop_loss_stage_c")
     
     def _reset_for_new_period(self) -> None:
         """为新的15分钟周期重置状态"""
@@ -587,8 +700,17 @@ class ReboundStrategy:
         if segment not in self.config.active_segments:
             return
         
+        # Only place new orders in configured order_segments
+        if segment not in self.config.order_segments:
+            return
+
         # 检查是否已有持仓
         if len(self._active_positions) > 0:
+            return
+
+        # Ensure only one new order per 15-minute period
+        if self._current_period_orders:
+            # already placed an order this period
             return
         
         # 检查BTC条件
@@ -729,6 +851,9 @@ class ReboundStrategy:
                     # 记录周期开始价格
                     if side not in self._period_start_prices:
                         self._period_start_prices[side] = snapshot.mid_price
+                    # evaluate P&L rules for strategy 3
+                    if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
+                        self._evaluate_positions_for_profit_and_loss()
                     break
         
         @self.market.on_market_change
@@ -751,6 +876,10 @@ class ReboundStrategy:
                 
                 # 检查触发条件
                 await self._check_trigger_conditions()
+                
+                # Profit & Loss evaluation (strategy 3)
+                if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
+                    self._evaluate_positions_for_profit_and_loss()
                 
                 # 检查auto-claim（仅在真实模式下）
                 await self._check_auto_claim()

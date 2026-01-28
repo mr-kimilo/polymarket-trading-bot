@@ -547,45 +547,115 @@ class ReboundStrategy:
                        如果不提供，则使用当前价格追踪器中的价格。
                        用于市场切换时，使用旧市场的最后价格。
         """
+        # In LIVE mode we should attempt to execute real SELL orders before updating DB.
+        # This function schedules async close tasks when running live and performs DB updates
+        # immediately for simulated mode.
         for side, pos_info in list(self._active_positions.items()):
             # 优先使用传入的价格（旧市场的最后价格）
             if use_prices and side in use_prices:
                 current_price = use_prices[side]
             else:
                 current_price = self.prices.get_current_price(side)
-            
+
             entry_price = pos_info.get("entry_price", 0)
             size = pos_info.get("size", 0)
             db_id = pos_info.get("db_id")
-            
-            if current_price > 0 and entry_price > 0:
-                pnl = (current_price - entry_price) * size
-                pnl_percent = (current_price - entry_price) / entry_price * 100
-                
-                # 更新数据库
-                if db_id:
-                    self.db.update_rebound_order_result(
-                        order_id=db_id,
-                        exit_price=current_price,
-                        exit_btc_price=self.btc_price_current,
-                        pnl=pnl,
-                        pnl_percent=pnl_percent,
-                        status=OrderStatus.CLOSED.value
+
+            if self.config.simulation_mode:
+                # Simulated mode: update DB and log synchronously
+                if current_price > 0 and entry_price > 0:
+                    pnl = (current_price - entry_price) * size
+                    pnl_percent = (current_price - entry_price) / entry_price * 100
+
+                    if db_id:
+                        self.db.update_rebound_order_result(
+                            order_id=db_id,
+                            exit_price=current_price,
+                            exit_btc_price=self.btc_price_current,
+                            pnl=pnl,
+                            pnl_percent=pnl_percent,
+                            status=OrderStatus.CLOSED.value
+                        )
+
+                    mode_str = "SIMULATED"
+                    color = Colors.GREEN if pnl >= 0 else Colors.RED
+                    self.log(
+                        f"[{mode_str}] Closed {side.upper()} @ {current_price:.4f} "
+                        f"PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET}",
+                        "success" if pnl >= 0 else "warning"
                     )
-                
-                mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
-                color = Colors.GREEN if pnl >= 0 else Colors.RED
-                self.log(
-                    f"[{mode_str}] Closed {side.upper()} @ {current_price:.4f} "
-                    f"PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET}",
-                    "success" if pnl >= 0 else "warning"
-                )
+            else:
+                # LIVE mode: schedule an async sell execution task that will perform
+                # the actual order placement and update the DB when done.
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._execute_close_live(side, current_price, pos_info, db_id, reason="period_end"))
+                except RuntimeError:
+                    # No running loop: try to schedule via asyncio.ensure_future
+                    asyncio.ensure_future(self._execute_close_live(side, current_price, pos_info, db_id, reason="period_end"))
+
             # cleanup peak tracker
             if side in self._position_peak_price:
                 del self._position_peak_price[side]
-        # 清空持仓
+
+        # 清空持仓记录 locally; DB will be updated by tasks in LIVE mode
         self._active_positions.clear()
         self._current_period_orders.clear()
+
+    async def _execute_close_live(self, side: str, exit_price: float, pos_info: Dict, db_id: Optional[int], reason: str = "") -> None:
+        """Execute a LIVE SELL to close a position and update the DB afterwards."""
+        # Ensure bot exists
+        if not self.bot:
+            self.log("Error: Bot not initialized for LIVE closing", "error")
+            return
+
+        token_id = pos_info.get("token_id") or self.token_ids.get(side)
+        size = pos_info.get("size", 0)
+
+        # Determine a sell price: prefer exit_price, but adjust slightly to avoid invalid tick sizes
+        sell_price = exit_price
+        if not sell_price or sell_price <= 0:
+            sell_price = self.prices.get_current_price(side)
+        # make small offset to increase chance of execution
+        sell_price = max(min(sell_price - 0.01, 0.99), 0.0)
+
+        self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={size:.4f}", "trade")
+
+        try:
+            result = await self.bot.place_order(
+                token_id=token_id,
+                price=sell_price,
+                size=size,
+                side="SELL",
+                fee_rate_bps=1000
+            )
+
+            if result.success:
+                self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id})", "success")
+            else:
+                self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")
+
+        except Exception as e:
+            self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
+
+        # Update DB with exit info regardless of order success (use provided exit_price)
+        entry_price = pos_info.get("entry_price", 0)
+        if exit_price and entry_price and db_id:
+            pnl = (exit_price - entry_price) * size
+            pnl_percent = (exit_price - entry_price) / entry_price * 100
+            self.db.update_rebound_order_result(
+                order_id=db_id,
+                exit_price=exit_price,
+                exit_btc_price=self.btc_price_current,
+                pnl=pnl,
+                pnl_percent=pnl_percent,
+                status=OrderStatus.CLOSED.value
+            )
+            color = Colors.GREEN if pnl >= 0 else Colors.RED
+            self.log(
+                f"[REAL] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
+                "success" if pnl >= 0 else "warning"
+            )
 
     def _close_position(self, side: str, exit_price: float, reason: str = "") -> None:
         """Close a single position and update DB/logs."""
@@ -597,28 +667,38 @@ class ReboundStrategy:
         size = pos_info.get("size", 0)
         db_id = pos_info.get("db_id")
 
-        if exit_price > 0 and entry_price > 0:
-            pnl = (exit_price - entry_price) * size
-            pnl_percent = (exit_price - entry_price) / entry_price * 100
+        if self.config.simulation_mode:
+            # synchronous simulated close
+            if exit_price > 0 and entry_price > 0:
+                pnl = (exit_price - entry_price) * size
+                pnl_percent = (exit_price - entry_price) / entry_price * 100
 
-            if db_id:
-                self.db.update_rebound_order_result(
-                    order_id=db_id,
-                    exit_price=exit_price,
-                    exit_btc_price=self.btc_price_current,
-                    pnl=pnl,
-                    pnl_percent=pnl_percent,
-                    status=OrderStatus.CLOSED.value
+                if db_id:
+                    self.db.update_rebound_order_result(
+                        order_id=db_id,
+                        exit_price=exit_price,
+                        exit_btc_price=self.btc_price_current,
+                        pnl=pnl,
+                        pnl_percent=pnl_percent,
+                        status=OrderStatus.CLOSED.value
+                    )
+
+                mode_str = "SIMULATED"
+                color = Colors.GREEN if pnl >= 0 else Colors.RED
+                self.log(
+                    f"[{mode_str}] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
+                    "success" if pnl >= 0 else "warning"
                 )
 
-            mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
-            color = Colors.GREEN if pnl >= 0 else Colors.RED
-            self.log(
-                f"[{mode_str}] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
-                "success" if pnl >= 0 else "warning"
-            )
+        else:
+            # LIVE mode: schedule async sell and DB update via helper
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._execute_close_live(side, exit_price, pos_info, db_id, reason=reason))
+            except RuntimeError:
+                asyncio.ensure_future(self._execute_close_live(side, exit_price, pos_info, db_id, reason=reason))
 
-        # cleanup
+        # cleanup local state
         if side in self._position_peak_price:
             del self._position_peak_price[side]
         if side in self._active_positions:

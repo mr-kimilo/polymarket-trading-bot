@@ -613,66 +613,57 @@ class ReboundStrategy:
         size = pos_info.get("size", 0)
         entry_price = pos_info.get("entry_price", 0)
 
-        # Determine a sell price with better validation
-        sell_price = 0.8  # default fallback
-        
-        # Try to use exit_price first (already validated in caller)
-        if exit_price and 0 < exit_price < 1:
-            sell_price = float(exit_price)
-        else:
-            # Fallback to current market price
-            current = self.prices.get_current_price(side)
-            if current and 0 < current < 1:
-                sell_price = float(current)
-            else:
-                # Last resort: use entry price if available
-                if entry_price and 0 < entry_price < 1:
-                    sell_price = float(entry_price)
-                else:
-                    self.log(f"Warning: No valid price found for {side.upper()}, using fallback 0.80", "warning")
-                    sell_price = 0.8
 
-        # Apply a small offset to favor execution (sell slightly below current)
-        # BUT ensure we don't go below 0.01
-        sell_price = sell_price - 0.01
-        
-        # Enforce tick size (0.01) by rounding to 2 decimals
-        sell_price = round(sell_price, 2)
-        
-        # Final bounds check (must be > 0 and < 1)
-        if sell_price <= 0.01:
-            sell_price = 0.01
-        if sell_price >= 1.0:
-            sell_price = 0.99
+        # 市价卖出逻辑：优先用盘口买一价（best_bid），无则降级为0.01
+        from asyncio import sleep
+        max_retries = 10
+        retry = 0
+        while retry < max_retries:
+            orderbook = None
+            if hasattr(self, 'market') and self.market:
+                orderbook = self.market.get_orderbook(side)
+            best_bid = orderbook.best_bid if orderbook and orderbook.best_bid > 0 else 0.0
+            sell_price = best_bid if best_bid > 0 else 0.01
+            sell_price = round(sell_price, 2)
+            if sell_price >= 1.0:
+                sell_price = 0.99
+            if sell_price <= 0.01:
+                sell_price = 0.01
 
-        # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
-        try:
-            rounded_size = round(float(size), 2)
-            if rounded_size <= 0:
-                self.log(f"Error: Invalid size {size} for {side.upper()}, cannot place SELL", "error")
+            # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
+            try:
+                rounded_size = round(float(size), 2)
+                if rounded_size <= 0:
+                    self.log(f"Error: Invalid size {size} for {side.upper()}, cannot place SELL", "error")
+                    return
+            except Exception as e:
+                self.log(f"Error: Failed to round size {size}: {e}", "error")
                 return
-        except Exception as e:
-            self.log(f"Error: Failed to round size {size}: {e}", "error")
-            return
 
-        self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason})", "trade")
+            self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry})", "trade")
 
-        try:
-            result = await self.bot.place_order(
-                token_id=token_id,
-                price=sell_price,
-                size=rounded_size,
-                side="SELL",
-                fee_rate_bps=1000
-            )
+            try:
+                result = await self.bot.place_order(
+                    token_id=token_id,
+                    price=sell_price,
+                    size=rounded_size,
+                    side="SELL",
+                    fee_rate_bps=1000
+                )
 
-            if result.success:
-                self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id})", "success")
-            else:
-                self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")
+                if result.success:
+                    self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id})", "success")
+                    break
+                else:
+                    self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")
+            except Exception as e:
+                self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
 
-        except Exception as e:
-            self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
+            retry += 1
+            await sleep(2)  # 等待2秒后重试，盘口可能有变化
+
+        if retry == max_retries:
+            self.log(f"[LIVE] 市价卖出重试{max_retries}次仍未成功，建议人工干预！", "error")
 
         # Update DB with exit info regardless of order success (use provided exit_price)
         if exit_price and entry_price and db_id:

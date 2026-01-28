@@ -651,4 +651,7 @@ Close SELL failed for DOWN: Request failed after 3 attempts: 400 Client Error: B
     - ✅ Size 精度符合 API 要求（2位小数）
     - ✅ 增强的错误处理和日志
 
-    
+49.达到卖出条件就按照盘口价卖出，如果盘口价变化，需要调整，并直到卖出
+获取当前盘口买一价（bid）。
+用 bid 作为你的卖出价格，挂限价单（SELL）。
+如果盘口无买一价，可以用 0.01 作为兜底价格（极端情况）。

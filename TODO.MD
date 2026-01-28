@@ -693,7 +693,12 @@ async def get_safe_sell_price(self, token_id: str):
     except Exception:
         return 0.01
 
-52.修改BOT.PY place_order的逻辑
+52.修改BOT.PY place_order的逻辑,例子如下，将新方法加入代码中
+tick_size 可以动态变化（例如当市场价格接近 0.96+ 或 0.04- 时，tick_size 可能从 0.01 变到 0.001）。
+价格必须是 tick_size 的整数倍（multiple of tick_size），否则 API 会 reject（如 "invalid price"）。
+price 必须用字符串或 Decimal 传递（避免 float 精度丢失），py-clob-client 内部会处理，但最好你自己控制。
+对于 FOK/FAK 市价单：额外限制（maker amount 最多 2 位小数，taker amount 最多 4 位），但你的代码是限价单（GTC/默认），所以 price 精度主要看 tick_size。
+
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from py_clob_client.constants import TickSize  # 或直接 str
 

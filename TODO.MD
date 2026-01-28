@@ -655,3 +655,11 @@ Close SELL failed for DOWN: Request failed after 3 attempts: 400 Client Error: B
 获取当前盘口买一价（bid）。
 用 bid 作为你的卖出价格，挂限价单（SELL）。
 如果盘口无买一价，可以用 0.01 作为兜底价格（极端情况）。
+50.找到48的原因了，rebound.py里面的这行，side的值不对，而是当前订单的方向，而且fee_rate_bps也应该是当前的fee用，应该是查询出来的。
+ result = await self.bot.place_order(
+                    token_id=token_id,
+                    price=sell_price,
+                    size=rounded_size,
+                    side="SELL",
+                    fee_rate_bps=1000
+                )

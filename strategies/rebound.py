@@ -643,12 +643,20 @@ class ReboundStrategy:
             self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry})", "trade")
 
             try:
+                # 获取当前市场真实费率
+                fee_rate_bps = 1000
+                if hasattr(self, 'market') and self.market and self.market.current_market:
+                    # Polymarket 15m市场通常只有一个fee，直接取raw数据
+                    raw = self.market.current_market.raw if hasattr(self.market.current_market, 'raw') else None
+                    if raw and 'takerFeeBps' in raw:
+                        fee_rate_bps = int(raw['takerFeeBps'])
+                # side参数用当前订单方向
                 result = await self.bot.place_order(
                     token_id=token_id,
                     price=sell_price,
                     size=rounded_size,
-                    side="SELL",
-                    fee_rate_bps=1000
+                    side=side.upper(),
+                    fee_rate_bps=fee_rate_bps
                 )
 
                 if result.success:

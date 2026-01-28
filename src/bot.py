@@ -99,21 +99,6 @@ class NotInitializedError(TradingBotError):
 
 
 class TradingBot:
-
-    _tick_size_cache: Dict[str, str] = {}
-
-    async def get_tick_size(self, token_id: str) -> str:
-        """获取并缓存tick_size，优先用clob_client.get_order_book(token_id)的'tickSize'字段。"""
-        if token_id in self._tick_size_cache:
-            return self._tick_size_cache[token_id]
-        try:
-            order_book = await asyncio.to_thread(self.clob_client.get_order_book, token_id)
-            tick = str(order_book.get('tickSize', '0.01'))
-            self._tick_size_cache[token_id] = tick
-            return tick
-        except Exception as e:
-            logger.warning(f"get_tick_size fallback: {e}")
-            return '0.01'
     """
     Main trading bot class for Polymarket.
 
@@ -326,21 +311,13 @@ class TradingBot:
         Returns:
             OrderResult with order status
         """
-        from decimal import Decimal, ROUND_DOWN
         signer = self.require_signer()
 
         try:
-            # 获取tick_size并对齐价格
-            tick_size_str = await self.get_tick_size(token_id)
-            tick_size = Decimal(tick_size_str)
-            price_dec = Decimal(str(price))
-            # 对齐到tick_size的整数倍
-            price_aligned = (price_dec // tick_size) * tick_size
-            price_aligned = price_aligned.quantize(tick_size, rounding=ROUND_DOWN)
-            # 价格用字符串传递，避免float精度丢失
+            # Create order
             order = Order(
                 token_id=token_id,
-                price=str(price_aligned),
+                price=price,
                 size=size,
                 side=side,
                 maker=self.config.safe_address,
@@ -356,6 +333,7 @@ class TradingBot:
             # Sign order with correct exchange contract
             signed = signer.sign_order(order, neg_risk=neg_risk)
 
+            #print close order body
             logger.error(f"print order body: {order}")
             # Submit to CLOB
             response = await self._run_in_thread(
@@ -365,7 +343,7 @@ class TradingBot:
             )
 
             logger.info(
-                f"Order placed: {side} {size}@{price_aligned} "
+                f"Order placed: {side} {size}@{price} "
                 f"(token: {token_id[:16]}...)"
             )
 

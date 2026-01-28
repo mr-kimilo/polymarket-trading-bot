@@ -663,3 +663,71 @@ Close SELL failed for DOWN: Request failed after 3 attempts: 400 Client Error: B
                     side="SELL",
                     fee_rate_bps=1000
                 )
+
+51.rebound.py的_execute_close_live方法卖单的时候，价格一直有问题，换一种新的方式获取价格。
+代码实例如下，完善卖出价格。
+首选：用 client.get_price(token_id) 或 client.get_midpoint(token_id)
+py-clob-client 提供了 get_price()（最近成交价）或 get_midpoint()（(best_bid + best_ask)/2），这些通常更可靠，不易受 ghost orderbook 影响
+
+
+async def get_safe_sell_price(self, token_id: str):
+    try:
+        # 优先用 midpoint（最稳定）
+        midpoint = await self.client.get_midpoint(token_id)
+        if midpoint and 0 < midpoint < 1:
+            return round(midpoint - 0.005, 3)  # 略低于 midpoint，确保吃单
+
+        # 次选：last trade price
+        last_price = await self.client.get_last_trade_price(token_id)
+        if last_price and 0 < last_price < 1:
+            return round(last_price - 0.01, 3)
+
+        # 再 fallback 到 orderbook best_bid
+        ob = await self.client.get_orderbook(token_id)
+        best_bid = ob.best_bid if ob and ob.best_bid > 0.01 else None
+        if best_bid and best_bid > 0.01:  # 过滤 ghost 0.01
+            return round(best_bid, 3)
+
+        # 最终兜底
+        return 0.01
+    except Exception:
+        return 0.01
+
+52.修改BOT.PY place_order的逻辑
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from py_clob_client.constants import TickSize  # 或直接 str
+
+# 先获取 tick_size（推荐缓存，避免每次查）
+async def get_tick_size(clob_client, token_id: str) -> str:
+    # clob_client 有 get_tick_size 方法，或 fallback API
+    try:
+        tick = await clob_client.get_tick_size(token_id)  # 返回 str 如 "0.01"
+        return tick
+    except:
+        # 兜底查市场 metadata（Gamma API 或 websocket）
+        return "0.01"  # 最常见默认
+
+# 调整 price 到 tick_size 的倍数（向下取整或四舍五入，根据策略）
+def adjust_price_to_tick(price: float | Decimal, tick_str: str) -> Decimal:
+    tick = Decimal(tick_str)
+    price_dec = Decimal(str(price))  # 防 float 误差
+    # 向下取整（保守，挂单更容易成交）
+    adjusted = (price_dec // tick) * tick
+    # 或四舍五入：adjusted = price_dec.quantize(tick, rounding=ROUND_HALF_UP)
+    return adjusted
+
+# 在你的下单代码前加：
+tick_size_str = await get_tick_size(self.clob_client, token_id)
+adjusted_price = adjust_price_to_tick(price, tick_size_str)
+
+# 然后用 Decimal 传
+order = Order(
+    token_id=token_id,
+    price=str(adjusted_price),  # 最好传 str 保持精度
+    size=size,                  # size 通常 2 位小数即可
+    side=side,
+    maker=self.config.safe_address,
+    fee_rate_bps=fee_rate_bps,
+)
+
+# 继续 neg_risk、sign、post

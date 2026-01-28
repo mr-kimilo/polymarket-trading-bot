@@ -333,6 +333,8 @@ class TradingBot:
             # Sign order with correct exchange contract
             signed = signer.sign_order(order, neg_risk=neg_risk)
 
+            #print close order body
+            logger.error(f"print order body: {order}")
             # Submit to CLOB
             response = await self._run_in_thread(
                 self.clob_client.post_order,

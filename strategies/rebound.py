@@ -134,6 +134,34 @@ class PriceRecord:
 
 
 class ReboundStrategy:
+
+    async def get_safe_sell_price(self, token_id: str, side: str) -> float:
+        """获取最安全的卖出价格，优先用midpoint，其次last price，最后盘口bid。"""
+        # 1. 优先用clob_client.get_market_price(token_id)的midpoint
+        try:
+            clob_client = getattr(self.bot, 'clob_client', None)
+            if clob_client:
+                price_data = clob_client.get_market_price(token_id)
+                midpoint = float(price_data.get('midpoint', 0))
+                if midpoint and 0 < midpoint < 1:
+                    return round(midpoint - 0.005, 3)
+                last = float(price_data.get('last', 0))
+                if last and 0 < last < 1:
+                    return round(last - 0.01, 3)
+        except Exception as e:
+            self.log(f"[WARN] get_safe_sell_price: {e}", "warning")
+        # 2. 盘口bid兜底
+        orderbook = None
+        if hasattr(self, 'market') and self.market:
+            orderbook = self.market.get_orderbook(side)
+        best_bid = orderbook.best_bid if orderbook and orderbook.best_bid > 0 else 0.0
+        sell_price = best_bid if best_bid > 0 else 0.01
+        sell_price = round(sell_price, 2)
+        if sell_price >= 1.0:
+            sell_price = 0.99
+        if sell_price <= 0.01:
+            sell_price = 0.01
+        return sell_price
     """
     Rebound反弹交易策略
     
@@ -619,16 +647,8 @@ class ReboundStrategy:
         max_retries = 10
         retry = 0
         while retry < max_retries:
-            orderbook = None
-            if hasattr(self, 'market') and self.market:
-                orderbook = self.market.get_orderbook(side)
-            best_bid = orderbook.best_bid if orderbook and orderbook.best_bid > 0 else 0.0
-            sell_price = best_bid if best_bid > 0 else 0.01
-            sell_price = round(sell_price, 2)
-            if sell_price >= 1.0:
-                sell_price = 0.99
-            if sell_price <= 0.01:
-                sell_price = 0.01
+            # 用更安全的方式获取卖出价格
+            sell_price = await self.get_safe_sell_price(token_id, side)
 
             # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
             try:
@@ -655,7 +675,8 @@ class ReboundStrategy:
                     token_id=token_id,
                     price=sell_price,
                     size=rounded_size,
-                    side=side.upper(),
+                    side='SELL',
+                    order_type='FOK',
                     fee_rate_bps=fee_rate_bps
                 )
 

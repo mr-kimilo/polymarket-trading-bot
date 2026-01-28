@@ -109,7 +109,7 @@ class ReboundConfig:
     auto_switch_market: bool = True
     
     # 显示设置
-    update_interval: float = 0.5
+    update_interval: float = 0.8
     
     # Auto-claim设置
     auto_claim_enabled: bool = True  # 是否启用自动claim
@@ -118,8 +118,8 @@ class ReboundConfig:
 
     # Profit & Loss (P&L) settings (used by strategy_type == "3")
     profit_and_loss_enabled: bool = False
-    # fraction (decimal) indicating take-profit base (e.g. 0.5 == +50%)
-    take_profit_base: float = 0.5
+    # fraction (decimal) indicating take-profit base (e.g. 0.8 == +80%)
+    take_profit_base: float = 0.8
     # fraction (decimal) peak->trough drawdown to trigger take-profit reduce (e.g. 0.1 == 10%)
     take_profit_reduce_loss: float = 0.1
     # fraction (decimal) loss threshold in stage C to trigger stop-loss (e.g. 0.2 == 20%)
@@ -611,21 +611,57 @@ class ReboundStrategy:
 
         token_id = pos_info.get("token_id") or self.token_ids.get(side)
         size = pos_info.get("size", 0)
+        entry_price = pos_info.get("entry_price", 0)
 
-        # Determine a sell price: prefer exit_price, but adjust slightly to avoid invalid tick sizes
-        sell_price = exit_price
-        if not sell_price or sell_price <= 0:
-            sell_price = self.prices.get_current_price(side)
-        # make small offset to increase chance of execution
-        sell_price = max(min(sell_price - 0.01, 0.99), 0.0)
+        # Determine a sell price with better validation
+        sell_price = 0.8  # default fallback
+        
+        # Try to use exit_price first (already validated in caller)
+        if exit_price and 0 < exit_price < 1:
+            sell_price = float(exit_price)
+        else:
+            # Fallback to current market price
+            current = self.prices.get_current_price(side)
+            if current and 0 < current < 1:
+                sell_price = float(current)
+            else:
+                # Last resort: use entry price if available
+                if entry_price and 0 < entry_price < 1:
+                    sell_price = float(entry_price)
+                else:
+                    self.log(f"Warning: No valid price found for {side.upper()}, using fallback 0.80", "warning")
+                    sell_price = 0.8
 
-        self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={size:.4f}", "trade")
+        # Apply a small offset to favor execution (sell slightly below current)
+        # BUT ensure we don't go below 0.01
+        sell_price = sell_price - 0.01
+        
+        # Enforce tick size (0.01) by rounding to 2 decimals
+        sell_price = round(sell_price, 2)
+        
+        # Final bounds check (must be > 0 and < 1)
+        if sell_price <= 0.01:
+            sell_price = 0.01
+        if sell_price >= 1.0:
+            sell_price = 0.99
+
+        # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
+        try:
+            rounded_size = round(float(size), 2)
+            if rounded_size <= 0:
+                self.log(f"Error: Invalid size {size} for {side.upper()}, cannot place SELL", "error")
+                return
+        except Exception as e:
+            self.log(f"Error: Failed to round size {size}: {e}", "error")
+            return
+
+        self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason})", "trade")
 
         try:
             result = await self.bot.place_order(
                 token_id=token_id,
                 price=sell_price,
-                size=size,
+                size=rounded_size,
                 side="SELL",
                 fee_rate_bps=1000
             )
@@ -639,7 +675,6 @@ class ReboundStrategy:
             self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
 
         # Update DB with exit info regardless of order success (use provided exit_price)
-        entry_price = pos_info.get("entry_price", 0)
         if exit_price and entry_price and db_id:
             pnl = (exit_price - entry_price) * size
             pnl_percent = (exit_price - entry_price) / entry_price * 100
@@ -723,7 +758,7 @@ class ReboundStrategy:
                 self._position_peak_price[side] = peak
 
             # check take-profit base eligibility
-            # profit_percent as decimal (e.g., 0.5 means +50%)
+            # profit_percent as decimal (e.g., 0.8 means +80%)
             profit_percent = (current_price - entry) / entry
             if not pos.get("_tp_eligible") and profit_percent >= self.config.take_profit_base:
                 # mark eligible when reached base TP

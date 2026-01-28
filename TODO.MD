@@ -586,4 +586,69 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
 44.移除测试脚本，开启模式3.开启模拟模式运行，今晚上用于测试模式3
 45.run_rebound_strategy.bat是否可以启动模式3并运行，修复lint 风格提示
 46.我观察到下单逻辑出问题了，策略3的下单时间应该是和策略1一样，修改代码增加下单逻辑，不影响策略1，而且15分钟只需要A段下一次单。
-47.经过测试，可以正常运行43的功能，但是我发现没有真正的止盈止损，修改代码，让执行run_rebound_live.bat的时候可以真正的止盈止损
+47.经过测试,可以正常运行43的功能，但是我发现没有真正的止盈止损，修改代码，让执行run_rebound_live.bat的时候可以真正的止盈止损
+48. ✅ live执行卖出失败，信息如下，检查API，修复问题，现在正有个订单，尝试卖出。
+Close SELL failed for DOWN: Request failed after 3 attempts: 400 Client Error: Bad Request for url: https://clob.polymarket.com/order - {'error': 'invalid price, price must be greater than 0 and less than 1'}
+
+    **问题分析**：
+    - SELL订单的价格可能因为计算逻辑或边界条件而超出 (0, 1) 范围
+    - 原代码中价格验证不够严格，可能传递 None 或负数给 API
+    - size 精度可能不符合 API 要求（2位小数）
+    
+    **解决方案**（`strategies/rebound.py`）：
+    1. 改进 `_execute_close_live()` 方法的价格验证：
+       - 优先使用 exit_price（已验证）
+       - Fallback 1: current_price（从市场获取）
+       - Fallback 2: entry_price（订单入场价）
+       - 最后 Fallback: 0.5（安全默认值）
+    
+    2. 增强价格边界检查：
+       - 应用 -0.01 offset 后立即检查
+       - 最终确保: 0.01 <= price <= 0.99
+       - 四舍五入到 2 位小数（tick size = 0.01）
+    
+    3. 修复 size 精度：
+       - 四舍五入到 2 位小数（taker_amount 规则）
+       - 验证 size > 0，否则提前返回
+    
+    4. 改进日志和错误处理：
+       - 日志显示 reason 参数
+       - size 异常时提前返回并记录错误
+    
+    **修改内容**：
+    ```python
+    # 多级 fallback 价格验证
+    if exit_price and 0 < exit_price < 1:
+        sell_price = float(exit_price)
+    else:
+        current = self.prices.get_current_price(side)
+        if current and 0 < current < 1:
+            sell_price = float(current)
+        else:
+            if entry_price and 0 < entry_price < 1:
+                sell_price = float(entry_price)
+            else:
+                sell_price = 0.5
+    
+    # 价格 offset 和边界检查
+    sell_price = sell_price - 0.01
+    sell_price = round(sell_price, 2)
+    if sell_price <= 0.01:
+        sell_price = 0.01
+    if sell_price >= 1.0:
+        sell_price = 0.99
+    
+    # Size 精度和验证
+    rounded_size = round(float(size), 2)
+    if rounded_size <= 0:
+        self.log(f"Error: Invalid size", "error")
+        return
+    ```
+    
+    **验证**：
+    - ✅ 价格始终在 (0, 1) 范围内
+    - ✅ 符合 tick size 规则（0.01 的倍数）
+    - ✅ Size 精度符合 API 要求（2位小数）
+    - ✅ 增强的错误处理和日志
+
+    

@@ -1031,3 +1031,25 @@ Request failed after 3 attempts: 400 Client Error: Bad Request for url: https://
 - ✅ 灵活可配置
 - ✅ 适用LIVE和SIMULATED模式
 - ✅ 向后兼容，不影响B/C段逻辑
+59.任务58的补充还没完成，生产上的live订单，从来没有成功过，你创建一个脚本，马上买，马上卖，使用1美元，我需要看到能真实的卖出
+还有需要增加更多的日志，为什么price不对，下面是界面的日志
+[18:05:05.277] ✗ [LIVE] Close SELL failed for UP: Request failed after 3 attempts: 400 Client Error: Bad Request for url: https://clob.polymarket.com/order - {'error': 'invalid price, price must be greater than 0 and less than 1'}
+  [18:05:07.279] ✗ [LIVE] 市价卖出重试10次仍未成功，建议人工干预！
+  [18:05:07.339] ⚠ [REAL] Closed UP @ 0.1900 PnL: $-0.71 (-35.6%) strategy3_stop_loss_stage_a [Trend: -0.05, -0.07, 0.24, 0.07, 0.00, -0.14, 0.03, 0.10, -0.31]
+
+60. ✅ test_live_buy_sell.py 测试金额减少到1u，持续验证卖出逻辑，是否可用挂单的方式卖出，比如比当前价格低3%。
+    解决：
+    - 测试金额设为$1.5 (API最小订单限制$1)
+    - 使用GTC (Good Till Cancelled) 限价挂单而不是FOK
+    - 卖出价格降低3%以确保挂单成功
+    - 测试结果: BUY和SELL都成功提交!
+61. ✅ 根据test_live_buy_sell.py 经验，检查策略三的所有卖出逻辑，用挂单方式卖出，低于当前单3%的数值需要可配置。
+    解决：
+    - 在ReboundConfig中添加两个新配置参数:
+      - strategy3_use_gtc_order: bool = True (使用GTC限价挂单)
+      - strategy3_sell_discount: float = 0.03 (卖出价格折扣3%)
+    - 修改_execute_close_live()方法:
+      - 根据配置决定使用GTC或FOK订单
+      - 应用卖出价格折扣
+    - 更新config.yaml添加新配置项
+    - 更新apps/run_rebound.py加载新配置

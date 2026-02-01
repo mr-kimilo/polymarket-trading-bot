@@ -106,6 +106,40 @@ def load_auto_claim_from_config() -> dict:
     return defaults
 
 
+def load_profit_and_loss_from_config() -> dict:
+    """从config.yaml加载profit_and_loss配置 (任务61)"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    defaults = {
+        "enabled": False,
+        "strategy3_take_profit_base": 0.8,
+        "strategy3_take_profit_pullback": 0.1,
+        "strategy3_stop_loss_stage_a": 0.35,
+        "strategy3_stop_loss_stage_bc": 0.2,
+        "strategy3_use_gtc_order": True,
+        "strategy3_sell_discount": 0.03
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            pnl = config.get("profit_and_loss", {})
+            
+            return {
+                "enabled": pnl.get("enabled", defaults["enabled"]),
+                "strategy3_take_profit_base": pnl.get("strategy3_take_profit_base", defaults["strategy3_take_profit_base"]),
+                "strategy3_take_profit_pullback": pnl.get("strategy3_take_profit_pullback", defaults["strategy3_take_profit_pullback"]),
+                "strategy3_stop_loss_stage_a": pnl.get("strategy3_stop_loss_stage_a", defaults["strategy3_stop_loss_stage_a"]),
+                "strategy3_stop_loss_stage_bc": pnl.get("strategy3_stop_loss_stage_bc", defaults["strategy3_stop_loss_stage_bc"]),
+                "strategy3_use_gtc_order": pnl.get("strategy3_use_gtc_order", defaults["strategy3_use_gtc_order"]),
+                "strategy3_sell_discount": pnl.get("strategy3_sell_discount", defaults["strategy3_sell_discount"])
+            }
+        except Exception as e:
+            print(f"{Colors.YELLOW}Warning: Failed to load profit_and_loss config: {e}{Colors.RESET}")
+    
+    return defaults
+
+
 def main():
     """Main entry point."""
     # 首先从config.yaml加载strategy.type
@@ -269,6 +303,9 @@ def main():
     # Load auto_claim settings from config
     auto_claim_config = load_auto_claim_from_config()
     
+    # Load profit_and_loss settings from config (任务61)
+    pnl_config = load_profit_and_loss_from_config()
+    
     strategy_config = ReboundConfig(
         strategy_type=final_strategy_type,
         coin=args.coin,
@@ -280,7 +317,15 @@ def main():
         direct_sell_enabled=direct_sell_enabled,
         auto_claim_enabled=auto_claim_config["enabled"],
         auto_claim_min_balance=auto_claim_config["min_balance"],
-        auto_claim_check_interval=auto_claim_config["check_interval"]
+        auto_claim_check_interval=auto_claim_config["check_interval"],
+        # 任务61: P&L配置
+        profit_and_loss_enabled=pnl_config["enabled"],
+        strategy3_take_profit_base=pnl_config["strategy3_take_profit_base"],
+        strategy3_take_profit_pullback=pnl_config["strategy3_take_profit_pullback"],
+        strategy3_stop_loss_stage_a=pnl_config["strategy3_stop_loss_stage_a"],
+        strategy3_stop_loss_stage_bc=pnl_config["strategy3_stop_loss_stage_bc"],
+        strategy3_use_gtc_order=pnl_config["strategy3_use_gtc_order"],
+        strategy3_sell_discount=pnl_config["strategy3_sell_discount"]
     )
 
     # Create and run strategy

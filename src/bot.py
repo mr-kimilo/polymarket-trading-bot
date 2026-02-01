@@ -333,12 +333,15 @@ class TradingBot:
             # Round size to 2 decimals (required by API)
             adjusted_size = round(size, 2)
             
-            logger.info(f"Adjusted price: {price} -> {adjusted_price} (tick_size={tick_size_str})")
+            # Convert Decimal to float properly by going through string to avoid precision issues
+            final_price = float(str(adjusted_price))
+            
+            logger.info(f"Adjusted price: {price} -> {final_price} (tick_size={tick_size_str})")
             
             # Create order with adjusted price
             order = Order(
                 token_id=token_id,
-                price=float(adjusted_price),
+                price=final_price,
                 size=adjusted_size,
                 side=side,
                 maker=self.config.safe_address,
@@ -355,7 +358,7 @@ class TradingBot:
             signed = signer.sign_order(order, neg_risk=neg_risk)
 
             # Print order body for debugging
-            logger.info(f"Order body: side={side}, price={adjusted_price}, size={adjusted_size}, fee={fee_rate_bps}")
+            logger.info(f"Order body: side={side}, price={final_price}, size={adjusted_size}, fee={fee_rate_bps}")
             
             # Submit to CLOB
             response = await self._run_in_thread(

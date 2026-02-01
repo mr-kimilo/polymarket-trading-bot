@@ -77,22 +77,39 @@ class Order:
             self.nonce = int(time.time())
 
         # Round to proper precision before converting to blockchain amounts
-        # Polymarket requires:
-        # - Price must be multiple of 0.01 (minimum tick size)
-        # - taker_amount max 2 decimals
-        # - maker_amount max 4 decimals
+        # Polymarket requires (for tick_size=0.01):
+        # - Price: max 2 decimal places
+        # - Size: max 2 decimal places  
+        # - Amount (size*price): max 4 decimal places
         
-        # Round price to 0.01 (minimum tick size)
-        rounded_price = round(self.price, 2)
-        # Round size to 2 decimals (for taker_amount precision)
-        rounded_size = round(self.size, 2)
+        from decimal import Decimal, ROUND_DOWN, ROUND_UP
         
-        # Store the rounded price for use in order
-        self.price = rounded_price
+        # Use Decimal for precise calculations
+        raw_price = Decimal(str(self.price)).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        raw_size = Decimal(str(self.size)).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+        
+        # Store the rounded price
+        self.price = float(raw_price)
+        
+        # Calculate amounts based on side (following official SDK logic)
+        # BUY: you give USDC (maker_amount), you get shares (taker_amount)
+        # SELL: you give shares (maker_amount), you get USDC (taker_amount)
+        if self.side == "BUY":
+            # BUY: taker_amount = size (shares), maker_amount = size * price (USDC)
+            raw_taker_amt = raw_size
+            raw_maker_amt = raw_size * raw_price
+            # Round maker_amount to 4 decimals
+            raw_maker_amt = raw_maker_amt.quantize(Decimal('0.0001'), rounding=ROUND_DOWN)
+        else:
+            # SELL: maker_amount = size (shares), taker_amount = size * price (USDC)
+            raw_maker_amt = raw_size
+            raw_taker_amt = raw_size * raw_price
+            # Round taker_amount to 4 decimals
+            raw_taker_amt = raw_taker_amt.quantize(Decimal('0.0001'), rounding=ROUND_DOWN)
         
         # Convert to integers for blockchain (USDC has 6 decimals)
-        self.taker_amount = str(int(rounded_size * 10**USDC_DECIMALS))
-        self.maker_amount = str(int(round(rounded_size * rounded_price, 4) * 10**USDC_DECIMALS))
+        self.taker_amount = str(int(raw_taker_amt * Decimal(10**USDC_DECIMALS)))
+        self.maker_amount = str(int(raw_maker_amt * Decimal(10**USDC_DECIMALS)))
         self.side_value = 0 if self.side == "BUY" else 1
 
 

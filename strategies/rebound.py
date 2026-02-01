@@ -127,6 +127,12 @@ class ReboundConfig:
     # fraction (decimal) loss threshold in stage B and C to trigger stop-loss (e.g. 0.2 == 20%)
     strategy3_stop_loss_stage_bc: float = 0.2
 
+    # Sell order configuration (任务61)
+    # Use GTC (Good Till Cancelled) limit order instead of FOK for more reliable execution
+    strategy3_use_gtc_order: bool = True
+    # Sell price discount - sell at X% below current price to ensure order fills (e.g. 0.03 == 3%)
+    strategy3_sell_discount: float = 0.03
+
     # Direct sell switch - when enabled, allows immediate selling of positions
     # Useful for manual intervention or emergency exits
     direct_sell_enabled: bool = False
@@ -175,9 +181,13 @@ class ReboundStrategy:
         
         sell_price = None
         
+        # 任务59: 记录调试信息
+        self.log(f"[DEBUG] get_safe_sell_price: token_id={token_id}, side={side}, tick_size={tick_size}", "info")
+        
         # 1. Try midpoint first (most stable)
         try:
             midpoint = clob_client.get_midpoint(token_id)
+            self.log(f"[DEBUG] get_midpoint returned: {midpoint} (type: {type(midpoint).__name__ if midpoint else 'None'})", "info")
             if midpoint and 0 < midpoint < 1:
                 # Slightly below midpoint to increase fill probability
                 sell_price = midpoint - float(tick_size)
@@ -200,19 +210,25 @@ class ReboundStrategy:
             try:
                 ob_data = clob_client.get_order_book(token_id)
                 bids = ob_data.get("bids", [])
+                self.log(f"[DEBUG] orderbook bids count: {len(bids)}, first 3: {bids[:3] if bids else 'empty'}", "info")
                 if bids:
                     # Get best bid (highest bid price)
-                    best_bid = max(float(b.get("price", 0)) for b in bids if float(b.get("price", 0)) > 0.01)
-                    if best_bid and best_bid > 0.01:
-                        sell_price = best_bid
-                        self.log(f"[INFO] Using orderbook best bid: {sell_price}", "info")
+                    valid_bids = [float(b.get("price", 0)) for b in bids if float(b.get("price", 0)) > 0.01]
+                    self.log(f"[DEBUG] valid_bids (>0.01): {valid_bids[:5] if valid_bids else 'none'}", "info")
+                    if valid_bids:
+                        best_bid = max(valid_bids)
+                        if best_bid and best_bid > 0.01:
+                            sell_price = best_bid
+                            self.log(f"[INFO] Using orderbook best bid: {sell_price}", "info")
             except Exception as e:
                 self.log(f"[WARN] get_order_book failed: {e}", "warning")
         
         # 4. Fallback to local orderbook if available
         if not sell_price or sell_price <= 0 or sell_price >= 1:
+            self.log(f"[DEBUG] Trying local orderbook fallback...", "info")
             if hasattr(self, 'market') and self.market:
                 orderbook = self.market.get_orderbook(side)
+                self.log(f"[DEBUG] local orderbook: {orderbook.best_bid if orderbook else 'None'}", "info")
                 if orderbook and orderbook.best_bid > 0.01:
                     sell_price = orderbook.best_bid
                     self.log(f"[INFO] Using local orderbook best bid: {sell_price}", "info")
@@ -223,16 +239,21 @@ class ReboundStrategy:
             self.log(f"[WARN] Using fallback price: {sell_price}", "warning")
         
         # Adjust to tick size and ensure bounds
+        self.log(f"[DEBUG] Before tick adjustment: sell_price={sell_price}", "info")
         sell_price_dec = Decimal(str(sell_price))
         adjusted = (sell_price_dec // tick_size) * tick_size
         adjusted = float(adjusted)
+        self.log(f"[DEBUG] After tick adjustment: adjusted={adjusted}", "info")
         
         # Ensure price is within valid bounds
         if adjusted <= 0:
+            self.log(f"[DEBUG] adjusted <= 0, setting to tick_size={tick_size}", "info")
             adjusted = float(tick_size)
         if adjusted >= 1:
+            self.log(f"[DEBUG] adjusted >= 1, setting to 1-tick_size={1.0 - float(tick_size)}", "info")
             adjusted = 1.0 - float(tick_size)
         
+        self.log(f"[DEBUG] Final sell price: {adjusted}", "info")
         return adjusted
     """
     Rebound反弹交易策略
@@ -877,14 +898,34 @@ class ReboundStrategy:
         from asyncio import sleep
         max_retries = 10
         retry = 0
+        
+        # 任务61: 获取配置参数
+        use_gtc = getattr(self.config, 'strategy3_use_gtc_order', True)
+        sell_discount = getattr(self.config, 'strategy3_sell_discount', 0.03)
+        order_type = 'GTC' if use_gtc else 'FOK'
+        
+        # 任务59: 增加详细的调试日志
+        self.log(f"[DEBUG] _execute_close_live started for {side.upper()}, token_id={token_id}, size={size}", "info")
+        self.log(f"[DEBUG] Order config: use_gtc={use_gtc}, sell_discount={sell_discount}, order_type={order_type}", "info")
+        
         while retry < max_retries:
             # 用更安全的方式获取卖出价格
             sell_price = await self.get_safe_sell_price(token_id, side)
+            
+            # 任务59: 记录原始返回的价格
+            self.log(f"[DEBUG] get_safe_sell_price returned: {sell_price} (type: {type(sell_price).__name__})", "info")
 
             # 任务58补充: 确保价格在有效范围内 (0 < price < 1)
             if sell_price <= 0 or sell_price >= 1:
                 self.log(f"[WARN] Invalid sell_price {sell_price}, using fallback 0.01", "warning")
                 sell_price = 0.01
+            
+            # 任务61: 应用卖出价格折扣（使用GTC挂单时，降低价格以确保成交）
+            if use_gtc and sell_discount > 0:
+                original_price = sell_price
+                sell_price = round(sell_price * (1 - sell_discount), 2)
+                sell_price = max(0.01, sell_price)  # 确保最低价格
+                self.log(f"[DEBUG] Applied sell discount: {original_price:.4f} -> {sell_price:.4f} (-{sell_discount*100:.0f}%)", "info")
             
             # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
             try:
@@ -896,7 +937,8 @@ class ReboundStrategy:
                 self.log(f"Error: Failed to round size {size}: {e}", "error")
                 return
 
-            self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry})", "trade")
+            self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry}, type={order_type})", "trade")
+
 
             try:
                 # 获取当前市场真实费率
@@ -907,17 +949,18 @@ class ReboundStrategy:
                     if raw and 'takerFeeBps' in raw:
                         fee_rate_bps = int(raw['takerFeeBps'])
                 # side参数用当前订单方向
+                # 任务61: 使用配置的订单类型 (GTC或FOK)
                 result = await self.bot.place_order(
                     token_id=token_id,
                     price=sell_price,
                     size=rounded_size,
                     side='SELL',
-                    order_type='FOK',
+                    order_type=order_type,
                     fee_rate_bps=fee_rate_bps
                 )
 
                 if result.success:
-                    self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id})", "success")
+                    self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id}, type={order_type})", "success")
                     break
                 else:
                     self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")

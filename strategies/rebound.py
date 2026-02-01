@@ -119,11 +119,13 @@ class ReboundConfig:
     # Profit & Loss (P&L) settings (used by strategy_type == "3")
     profit_and_loss_enabled: bool = False
     # fraction (decimal) indicating take-profit base (e.g. 0.8 == +80%)
-    take_profit_base: float = 0.8
+    strategy3_take_profit_base: float = 0.8
     # fraction (decimal) peak->trough drawdown to trigger take-profit reduce (e.g. 0.1 == 10%)
-    take_profit_reduce_loss: float = 0.1
+    strategy3_take_profit_pullback: float = 0.1
+    # fraction (decimal) loss threshold in stage A to trigger emergency stop-loss (e.g. 0.35 == 35%)
+    strategy3_stop_loss_stage_a: float = 0.35
     # fraction (decimal) loss threshold in stage B and C to trigger stop-loss (e.g. 0.2 == 20%)
-    stop_loss_stage_bc: float = 0.2
+    strategy3_stop_loss_stage_bc: float = 0.2
 
     # Direct sell switch - when enabled, allows immediate selling of positions
     # Useful for manual intervention or emergency exits
@@ -879,6 +881,11 @@ class ReboundStrategy:
             # 用更安全的方式获取卖出价格
             sell_price = await self.get_safe_sell_price(token_id, side)
 
+            # 任务58补充: 确保价格在有效范围内 (0 < price < 1)
+            if sell_price <= 0 or sell_price >= 1:
+                self.log(f"[WARN] Invalid sell_price {sell_price}, using fallback 0.01", "warning")
+                sell_price = 0.01
+            
             # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
             try:
                 rounded_size = round(float(size), 2)
@@ -1020,29 +1027,36 @@ class ReboundStrategy:
             # check take-profit base eligibility
             # profit_percent as decimal (e.g., 0.8 means +80%)
             profit_percent = (current_price - entry) / entry
-            if not pos.get("_tp_eligible") and profit_percent >= self.config.take_profit_base:
+            if not pos.get("_tp_eligible") and profit_percent >= self.config.strategy3_take_profit_base:
                 # mark eligible when reached base TP
                 pos["_tp_eligible"] = True
-                self.log(f"Position {side.upper()} reached take_profit_base ({profit_percent:.2%}), eligible for TP", "info")
+                self.log(f"Position {side.upper()} reached strategy3_take_profit_base ({profit_percent:.2%}), eligible for TP", "info")
 
             # if eligible, wait for pullback from peak by reduce_loss fraction
             if pos.get("_tp_eligible"):
                 # peak-to-current drawdown fraction
                 if peak > 0:
                     drawdown = (peak - current_price) / peak
-                    if drawdown >= self.config.take_profit_reduce_loss:
+                    if drawdown >= self.config.strategy3_take_profit_pullback:
                         # Sell to take profit
                         self.log(f"Take-profit trigger for {side.upper()}: peak={peak:.4f}, current={current_price:.4f}, drawdown={drawdown:.2%}", "success")
-                        self._close_position(side, current_price, reason="take_profit")
+                        self._close_position(side, current_price, reason="strategy3_take_profit")
                         continue
 
-            # Stop-loss check for B and C stages (任务57: 扩展止损到B和C阶段)
+            # Stop-loss check (任务58: 为A段添加紧急止损保护)
             segment = self.get_current_segment()
-            if segment in ["B", "C"]:
-                loss_frac = (entry - current_price) / entry
-                if loss_frac >= self.config.stop_loss_stage_bc:
-                    self.log(f"Stage {segment} stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
-                    self._close_position(side, current_price, reason=f"stop_loss_stage_{segment.lower()}")
+            loss_frac = (entry - current_price) / entry
+            
+            # A段: 更宽松的紧急止损 (35%)
+            if segment == "A" and loss_frac >= self.config.strategy3_stop_loss_stage_a:
+                self.log(f"Stage A emergency stop-loss for {side.upper()}: loss={loss_frac:.2%}", "error")
+                self._close_position(side, current_price, reason="strategy3_stop_loss_stage_a")
+                continue
+            
+            # B和C段: 常规止损 (20%)
+            if segment in ["B", "C"] and loss_frac >= self.config.strategy3_stop_loss_stage_bc:
+                self.log(f"Stage {segment} stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
+                self._close_position(side, current_price, reason=f"strategy3_stop_loss_stage_{segment.lower()}")
     
     def _reset_for_new_period(self) -> None:
         """为新的15分钟周期重置状态"""

@@ -59,32 +59,39 @@ def check_profit_and_loss_config(config):
     pnl = config.get("profit_and_loss", {})
     
     enabled = pnl.get("enabled")
-    take_profit_base = pnl.get("take_profit_base")
-    take_profit_reduce_loss = pnl.get("take_profit_reduce_loss")
-    stop_loss_stage_bc = pnl.get("stop_loss_stage_bc")
+    take_profit_base = pnl.get("strategy3_take_profit_base")
+    take_profit_pullback = pnl.get("strategy3_take_profit_pullback")
+    stop_loss_stage_a = pnl.get("strategy3_stop_loss_stage_a")
+    stop_loss_stage_bc = pnl.get("strategy3_stop_loss_stage_bc")
     
-    print(f"✓ profit_and_loss.enabled: {enabled}")
-    print(f"✓ take_profit_base: {take_profit_base} ({take_profit_base*100:.0f}%)")
-    print(f"  → 订单盈利达到 {take_profit_base*100:.0f}% 时，进入止盈监控状态")
+    print(f"[OK] profit_and_loss.enabled: {enabled}")
+    print(f"[OK] strategy3_take_profit_base: {take_profit_base} ({take_profit_base*100:.0f}%)")
+    print(f"  -> Order profit reach {take_profit_base*100:.0f}%, enter take-profit monitoring")
     
-    print(f"✓ take_profit_reduce_loss: {take_profit_reduce_loss} ({take_profit_reduce_loss*100:.0f}%)")
-    print(f"  → 从峰值回落 {take_profit_reduce_loss*100:.0f}% 时，执行止盈卖出")
+    print(f"[OK] strategy3_take_profit_pullback: {take_profit_pullback} ({take_profit_pullback*100:.0f}%)")
+    print(f"  -> Pullback {take_profit_pullback*100:.0f}% from peak, trigger take-profit sell")
     
-    print(f"✓ stop_loss_stage_bc: {stop_loss_stage_bc} ({stop_loss_stage_bc*100:.0f}%)")
-    print(f"  → 在B和C阶段，损失超过 {stop_loss_stage_bc*100:.0f}% 时止损")
+    print(f"[OK] strategy3_stop_loss_stage_a: {stop_loss_stage_a} ({stop_loss_stage_a*100:.0f}%)")
+    print(f"  -> In Stage A, loss over {stop_loss_stage_a*100:.0f}% trigger emergency stop-loss")
+    
+    print(f"[OK] strategy3_stop_loss_stage_bc: {stop_loss_stage_bc} ({stop_loss_stage_bc*100:.0f}%)")
+    print(f"  -> In Stage B/C, loss over {stop_loss_stage_bc*100:.0f}% trigger stop-loss")
     
     # Validate values
     if not enabled:
-        print("⚠️  警告: profit_and_loss.enabled 未启用!")
+        print("[WARN] profit_and_loss.enabled is not enabled!")
     
     if take_profit_base <= 0 or take_profit_base >= 1:
-        print(f"❌ 错误: take_profit_base={take_profit_base} 超出合理范围 (0, 1)")
+        print(f"[ERROR] strategy3_take_profit_base={take_profit_base} out of valid range (0, 1)")
     
-    if take_profit_reduce_loss <= 0 or take_profit_reduce_loss >= 1:
-        print(f"❌ 错误: take_profit_reduce_loss={take_profit_reduce_loss} 超出合理范围 (0, 1)")
+    if take_profit_pullback <= 0 or take_profit_pullback >= 1:
+        print(f"[ERROR] strategy3_take_profit_pullback={take_profit_pullback} out of valid range (0, 1)")
+    
+    if stop_loss_stage_a <= 0 or stop_loss_stage_a >= 1:
+        print(f"[ERROR] strategy3_stop_loss_stage_a={stop_loss_stage_a} out of valid range (0, 1)")
     
     if stop_loss_stage_bc <= 0 or stop_loss_stage_bc >= 1:
-        print(f"❌ 错误: stop_loss_stage_bc={stop_loss_stage_bc} 超出合理范围 (0, 1)")
+        print(f"[ERROR] strategy3_stop_loss_stage_bc={stop_loss_stage_bc} out of valid range (0, 1)")
     
     return pnl
 
@@ -184,9 +191,10 @@ def simulate_rebound_config(config, strategy_type):
             strategy_type=strategy_type,
             simulation_mode=True,  # For safety
             profit_and_loss_enabled=pnl.get("enabled", False),
-            take_profit_base=pnl.get("take_profit_base", 0.8),
-            take_profit_reduce_loss=pnl.get("take_profit_reduce_loss", 0.1),
-            stop_loss_stage_bc=pnl.get("stop_loss_stage_bc", 0.2),
+            strategy3_take_profit_base=pnl.get("strategy3_take_profit_base", 0.8),
+            strategy3_take_profit_pullback=pnl.get("strategy3_take_profit_pullback", 0.1),
+            strategy3_stop_loss_stage_a=pnl.get("strategy3_stop_loss_stage_a", 0.35),
+            strategy3_stop_loss_stage_bc=pnl.get("strategy3_stop_loss_stage_bc", 0.2),
             auto_claim_enabled=auto_claim.get("enabled", True),
             auto_claim_min_balance=auto_claim.get("min_balance", 5.0),
             auto_claim_check_interval=auto_claim.get("check_interval", 60) * 60,  # minutes to seconds
@@ -196,9 +204,10 @@ def simulate_rebound_config(config, strategy_type):
         print("✓ ReboundConfig 创建成功")
         print(f"  - strategy_type: {rebound_config.strategy_type}")
         print(f"  - profit_and_loss_enabled: {rebound_config.profit_and_loss_enabled}")
-        print(f"  - take_profit_base: {rebound_config.take_profit_base} ({rebound_config.take_profit_base*100:.0f}%)")
-        print(f"  - take_profit_reduce_loss: {rebound_config.take_profit_reduce_loss} ({rebound_config.take_profit_reduce_loss*100:.0f}%)")
-        print(f"  - stop_loss_stage_bc: {rebound_config.stop_loss_stage_bc} ({rebound_config.stop_loss_stage_bc*100:.0f}%)")
+        print(f"  - strategy3_take_profit_base: {rebound_config.strategy3_take_profit_base} ({rebound_config.strategy3_take_profit_base*100:.0f}%)")
+        print(f"  - strategy3_take_profit_pullback: {rebound_config.strategy3_take_profit_pullback} ({rebound_config.strategy3_take_profit_pullback*100:.0f}%)")
+        print(f"  - strategy3_stop_loss_stage_a: {rebound_config.strategy3_stop_loss_stage_a} ({rebound_config.strategy3_stop_loss_stage_a*100:.0f}%)")
+        print(f"  - strategy3_stop_loss_stage_bc: {rebound_config.strategy3_stop_loss_stage_bc} ({rebound_config.strategy3_stop_loss_stage_bc*100:.0f}%)")
         print(f"  - active_segments: {rebound_config.active_segments}")
         print(f"  - order_segments: {rebound_config.order_segments}")
         
@@ -230,15 +239,17 @@ def print_strategy3_explanation():
    - 当价格从峰值回落 take_profit_reduce_loss (如10%) 时，执行卖出
    - 例如: 入场0.20 → 涨到0.36(+80%) → 回落到0.32(-11%) → 触发止盈
 
-3. 止损逻辑:
-   - 在B段和C段(10-0分钟)，如果还没有止盈
-   - 检查亏损是否超过 stop_loss_stage_bc (如20%)
-   - 超过则立即止损卖出，减少损失
-   - 例如: 入场0.20 → 跌到0.16(-20%) → 触发止损
+3. 止损逻辑 (任务58: 三级止损保护):
+   - A段(15-10分钟): 紧急止损阈值 stop_loss_stage_a (如35%)，防止极端损失
+   - B段和C段(10-0分钟): 常规止损阈值 stop_loss_stage_bc (如20%)
+   - 超过阈值则立即止损卖出，减少损失
+   - 例如A段: 入场0.20 → 跌到0.13(-35%) → 触发紧急止损
+   - 例如B/C段: 入场0.20 → 跌到0.16(-20%) → 触发止损
 
 4. 优势:
    - 不等到15分钟结束，根据趋势及时止盈
    - 避免盈利回吐，锁定利润
+   - 三级止损保护，既允许A段反弹，又防止极端损失
    - 在下跌趋势中及时止损，控制风险
 
 5. 反弹趋势记录 (任务56新增):

@@ -238,6 +238,9 @@ class Database:
             pnl DECIMAL(15, 4),
             pnl_percent DECIMAL(10, 4),
             
+            -- 反弹趋势记录 (任务56)
+            rebound_trend TEXT,
+            
             -- 状态
             status VARCHAR(20) NOT NULL DEFAULT 'pending',
             is_simulated BOOLEAN NOT NULL DEFAULT TRUE,
@@ -332,7 +335,8 @@ class Database:
         exit_btc_price: Optional[float] = None,
         pnl: Optional[float] = None,
         pnl_percent: Optional[float] = None,
-        status: str = OrderStatus.CLOSED.value
+        status: str = OrderStatus.CLOSED.value,
+        rebound_trend: Optional[str] = None
     ) -> bool:
         """
         更新Rebound订单的结果
@@ -344,6 +348,7 @@ class Database:
             pnl: 盈亏金额
             pnl_percent: 盈亏百分比
             status: 订单状态
+            rebound_trend: 反弹趋势记录 (逗号分隔的百分比字符串)
             
         Returns:
             是否更新成功
@@ -359,14 +364,15 @@ class Database:
             exit_at = CURRENT_TIMESTAMP,
             pnl = %s,
             pnl_percent = %s,
-            status = %s
+            status = %s,
+            rebound_trend = %s
         WHERE id = %s;
         """
         
         try:
             with self._conn.cursor() as cur:
                 cur.execute(update_sql, (
-                    exit_price, exit_btc_price, pnl, pnl_percent, status, order_id
+                    exit_price, exit_btc_price, pnl, pnl_percent, status, rebound_trend, order_id
                 ))
                 logger.info(f"Updated rebound order {order_id}: pnl={pnl}, status={status}")
                 return True

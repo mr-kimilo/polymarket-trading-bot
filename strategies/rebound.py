@@ -287,6 +287,15 @@ class ReboundStrategy:
         self._market_start_time: Optional[float] = None
         self._period_start_prices: Dict[str, float] = {}
 
+        # 反弹趋势记录 (任务56)
+        # 每15秒记录一次反弹百分比，用于分析反弹趋势
+        self._rebound_trend_records: Dict[str, List[float]] = {
+            "up": [],    # UP side 反弹百分比记录
+            "down": []   # DOWN side 反弹百分比记录
+        }
+        self._last_trend_record_time: float = 0
+        self._trend_record_interval: float = 15.0  # 每15秒记录一次
+
         # Auto-claim
         self._last_claim_check: float = 0
         self._auto_claimer = None
@@ -523,6 +532,71 @@ class ReboundStrategy:
                 self.btc_price_start = price
             self.btc_price_current = price
             self.last_btc_update = now
+    
+    def _record_rebound_trend(self) -> None:
+        """
+        记录反弹趋势 (任务56)
+        
+        每15秒记录一次UP和DOWN的反弹百分比，用于后续分析最佳止盈点。
+        反弹百分比 = (当前价格 - 开始价格) / 开始价格
+        """
+        now = time.time()
+        
+        # 检查是否到了记录时间
+        if now - self._last_trend_record_time < self._trend_record_interval:
+            return
+        
+        # 只在有持仓时记录
+        if not self._active_positions:
+            return
+        
+        # 记录每个持仓的反弹百分比
+        for side in ["up", "down"]:
+            if side not in self._active_positions:
+                continue
+            
+            pos = self._active_positions[side]
+            entry_price = pos.get("entry_price", 0)
+            if entry_price <= 0:
+                continue
+            
+            current_price = self.prices.get_current_price(side)
+            if current_price <= 0:
+                continue
+            
+            # 计算反弹百分比
+            rebound_pct = (current_price - entry_price) / entry_price
+            
+            # 记录到数组
+            self._rebound_trend_records[side].append(rebound_pct)
+            
+            # 记录日志（debug级别）
+            self.log(
+                f"[TREND] {side.upper()} rebound: {rebound_pct:.2%} "
+                f"(entry={entry_price:.4f}, current={current_price:.4f})",
+                "debug"
+            )
+        
+        # 更新最后记录时间
+        self._last_trend_record_time = now
+    
+    def _get_rebound_trend_summary(self, side: str) -> str:
+        """
+        获取反弹趋势记录的摘要字符串
+        
+        Args:
+            side: "up" 或 "down"
+            
+        Returns:
+            逗号分隔的反弹百分比字符串，例如: "0.15, 0.25, 0.35, 0.30, 0.28"
+        """
+        records = self._rebound_trend_records.get(side, [])
+        if not records:
+            return ""
+        
+        # 格式化为百分比字符串（保留2位小数）
+        pct_strings = [f"{r:.2f}" for r in records]
+        return ", ".join(pct_strings)
     
     def _check_btc_condition(self) -> bool:
         """
@@ -853,17 +927,23 @@ class ReboundStrategy:
         if exit_price and entry_price and db_id:
             pnl = (exit_price - entry_price) * size
             pnl_percent = (exit_price - entry_price) / entry_price * 100
+            
+            # 获取反弹趋势记录 (任务56)
+            rebound_trend = self._get_rebound_trend_summary(side)
+            
             self.db.update_rebound_order_result(
                 order_id=db_id,
                 exit_price=exit_price,
                 exit_btc_price=self.btc_price_current,
                 pnl=pnl,
                 pnl_percent=pnl_percent,
-                status=OrderStatus.CLOSED.value
+                status=OrderStatus.CLOSED.value,
+                rebound_trend=rebound_trend
             )
             color = Colors.GREEN if pnl >= 0 else Colors.RED
+            trend_info = f" [Trend: {rebound_trend}]" if rebound_trend else ""
             self.log(
-                f"[REAL] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
+                f"[REAL] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}{trend_info}",
                 "success" if pnl >= 0 else "warning"
             )
 
@@ -884,19 +964,24 @@ class ReboundStrategy:
                 pnl_percent = (exit_price - entry_price) / entry_price * 100
 
                 if db_id:
+                    # 获取反弹趋势记录 (任务56)
+                    rebound_trend = self._get_rebound_trend_summary(side)
+                    
                     self.db.update_rebound_order_result(
                         order_id=db_id,
                         exit_price=exit_price,
                         exit_btc_price=self.btc_price_current,
                         pnl=pnl,
                         pnl_percent=pnl_percent,
-                        status=OrderStatus.CLOSED.value
+                        status=OrderStatus.CLOSED.value,
+                        rebound_trend=rebound_trend
                     )
 
                 mode_str = "SIMULATED"
                 color = Colors.GREEN if pnl >= 0 else Colors.RED
+                trend_info = f" [Trend: {self._get_rebound_trend_summary(side)}]" if self._rebound_trend_records.get(side) else ""
                 self.log(
-                    f"[{mode_str}] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}",
+                    f"[{mode_str}] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}{trend_info}",
                     "success" if pnl >= 0 else "warning"
                 )
 
@@ -974,6 +1059,10 @@ class ReboundStrategy:
         
         # 重置价格历史
         self._price_history = {"up": [], "down": []}
+        
+        # 重置反弹趋势记录 (任务56)
+        self._rebound_trend_records = {"up": [], "down": []}
+        self._last_trend_record_time = 0
         
         # 重置BTC开始价格
         self.btc_price_start = self.btc_price_current
@@ -1170,6 +1259,9 @@ class ReboundStrategy:
                 # Profit & Loss evaluation (strategy 3)
                 if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
                     self._evaluate_positions_for_profit_and_loss()
+                
+                # 记录反弹趋势 (任务56)
+                self._record_rebound_trend()
                 
                 # 检查auto-claim（仅在真实模式下）
                 await self._check_auto_claim()

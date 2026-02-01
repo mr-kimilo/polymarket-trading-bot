@@ -836,3 +836,82 @@ direct_sell.bat
 2. 如果余额 < $5.00，查询可赎回仓位
 3. 通过 Relayer 执行 gasless 交易赎回获胜仓位
 4. 更新余额后继续交易
+
+56. ✅ 生成脚本，检查strategy=3的配置和设置情况，经过长期测试，策略3可能是最稳健的策略，也就是短期波动并卖出，不等到最后
+但是究竟多少卖出我不确定，为了获得一个平均反弹值，我需要记录一个数组，每15秒记录一下反弹百分比，以逗号分开，这样可以知道反弹的趋势，后面用于确定多少卖出合适。
+
+**完成内容**：
+
+1. **策略3配置检查脚本** (`scripts/check_strategy3_config.py`)：
+   - 检查 config.yaml 中策略类型、P&L配置、auto-claim配置
+   - 检查环境变量配置
+   - 模拟创建 ReboundConfig 验证配置正确性
+   - 输出策略3工作原理说明
+   - 测试结果：✅ 所有检查通过！
+
+2. **反弹趋势记录功能**：
+   - 在 `strategies/rebound.py` 中添加数据结构：
+     - `_rebound_trend_records: Dict[str, List[float]]` - 存储反弹百分比
+     - `_last_trend_record_time: float` - 上次记录时间
+     - `_trend_record_interval: float = 15.0` - 记录间隔（15秒）
+   
+   - 添加方法：
+     - `_record_rebound_trend()` - 每15秒记录反弹百分比
+     - `_get_rebound_trend_summary(side)` - 返回逗号分隔的趋势字符串
+   
+   - 集成到主循环：在 `run()` 方法中每个周期调用记录方法
+   
+   - 平仓时保存：在 `_close_position()` 和 `_execute_close_live()` 中
+     保存趋势摘要到数据库和日志
+
+3. **数据库支持**：
+   - 在 `src/database.py` 中更新 `rebound_orders` 表结构
+   - 添加 `rebound_trend TEXT` 字段
+   - 修改 `update_rebound_order_result()` 方法支持保存趋势
+   - 创建 `scripts/add_rebound_trend_column.py` 添加字段
+   - 测试结果：✅ 字段添加成功
+
+4. **测试验证**：
+   - 创建 `scripts/test_rebound_trend.py` 测试脚本
+   - 验证数据结构、方法存在性、记录功能
+   - 模拟持仓测试，验证趋势摘要格式
+   - 测试结果：✅ 所有测试通过
+   - 示例输出：`0.10, 0.25, 0.40, 0.50, 0.60, 0.50, 0.40`
+
+**工作原理**：
+- 下单后初始化持仓，记录入场价格
+- 每15秒计算反弹百分比：`(current_price - entry_price) / entry_price`
+- 记录到数组：`_rebound_trend_records[side].append(rebound_pct)`
+- 平仓时生成摘要字符串并保存到数据库 `rebound_trend` 字段
+- 新周期开始时清空记录数组
+
+**使用方法**：
+```bash
+# 检查配置
+python scripts/check_strategy3_config.py
+
+# 更新数据库（首次运行）
+python scripts/add_rebound_trend_column.py
+
+# 运行策略3（模拟）
+python apps/run_rebound.py --coin BTC --strategy-type 3
+
+# 运行策略3（真实）
+python apps/run_rebound.py --coin BTC --strategy-type 3 --live --size 3
+```
+
+**数据分析**：
+通过收集的反弹趋势数据，可以分析：
+- 平均反弹幅度
+- 峰值时间分布
+- 最佳止盈点
+- 回撤特征
+- 优化 `take_profit_base` 和 `take_profit_reduce_loss` 参数
+
+**修改文件**：
+- 新增：`scripts/check_strategy3_config.py`
+- 新增：`scripts/test_rebound_trend.py`
+- 新增：`scripts/add_rebound_trend_column.py`
+- 新增：`task56_completion_report.md`
+- 修改：`strategies/rebound.py` - 添加趋势记录功能
+- 修改：`src/database.py` - 添加 rebound_trend 字段支持

@@ -61,7 +61,7 @@ def check_profit_and_loss_config(config):
     enabled = pnl.get("enabled")
     take_profit_base = pnl.get("take_profit_base")
     take_profit_reduce_loss = pnl.get("take_profit_reduce_loss")
-    stop_loss_stage_c = pnl.get("stop_loss_stage_c")
+    stop_loss_stage_bc = pnl.get("stop_loss_stage_bc")
     
     print(f"✓ profit_and_loss.enabled: {enabled}")
     print(f"✓ take_profit_base: {take_profit_base} ({take_profit_base*100:.0f}%)")
@@ -70,8 +70,8 @@ def check_profit_and_loss_config(config):
     print(f"✓ take_profit_reduce_loss: {take_profit_reduce_loss} ({take_profit_reduce_loss*100:.0f}%)")
     print(f"  → 从峰值回落 {take_profit_reduce_loss*100:.0f}% 时，执行止盈卖出")
     
-    print(f"✓ stop_loss_stage_c: {stop_loss_stage_c} ({stop_loss_stage_c*100:.0f}%)")
-    print(f"  → 在C阶段(10-15分钟)，损失超过 {stop_loss_stage_c*100:.0f}% 时止损")
+    print(f"✓ stop_loss_stage_bc: {stop_loss_stage_bc} ({stop_loss_stage_bc*100:.0f}%)")
+    print(f"  → 在B和C阶段，损失超过 {stop_loss_stage_bc*100:.0f}% 时止损")
     
     # Validate values
     if not enabled:
@@ -83,8 +83,8 @@ def check_profit_and_loss_config(config):
     if take_profit_reduce_loss <= 0 or take_profit_reduce_loss >= 1:
         print(f"❌ 错误: take_profit_reduce_loss={take_profit_reduce_loss} 超出合理范围 (0, 1)")
     
-    if stop_loss_stage_c <= 0 or stop_loss_stage_c >= 1:
-        print(f"❌ 错误: stop_loss_stage_c={stop_loss_stage_c} 超出合理范围 (0, 1)")
+    if stop_loss_stage_bc <= 0 or stop_loss_stage_bc >= 1:
+        print(f"❌ 错误: stop_loss_stage_bc={stop_loss_stage_bc} 超出合理范围 (0, 1)")
     
     return pnl
 
@@ -186,19 +186,19 @@ def simulate_rebound_config(config, strategy_type):
             profit_and_loss_enabled=pnl.get("enabled", False),
             take_profit_base=pnl.get("take_profit_base", 0.8),
             take_profit_reduce_loss=pnl.get("take_profit_reduce_loss", 0.1),
-            stop_loss_stage_c=pnl.get("stop_loss_stage_c", 0.2),
+            stop_loss_stage_bc=pnl.get("stop_loss_stage_bc", 0.2),
             auto_claim_enabled=auto_claim.get("enabled", True),
             auto_claim_min_balance=auto_claim.get("min_balance", 5.0),
             auto_claim_check_interval=auto_claim.get("check_interval", 60) * 60,  # minutes to seconds
             direct_sell_enabled=direct_sell.get("enabled", False)
         )
         
-        print(f"✓ ReboundConfig 创建成功")
+        print("✓ ReboundConfig 创建成功")
         print(f"  - strategy_type: {rebound_config.strategy_type}")
         print(f"  - profit_and_loss_enabled: {rebound_config.profit_and_loss_enabled}")
         print(f"  - take_profit_base: {rebound_config.take_profit_base} ({rebound_config.take_profit_base*100:.0f}%)")
         print(f"  - take_profit_reduce_loss: {rebound_config.take_profit_reduce_loss} ({rebound_config.take_profit_reduce_loss*100:.0f}%)")
-        print(f"  - stop_loss_stage_c: {rebound_config.stop_loss_stage_c} ({rebound_config.stop_loss_stage_c*100:.0f}%)")
+        print(f"  - stop_loss_stage_bc: {rebound_config.stop_loss_stage_bc} ({rebound_config.stop_loss_stage_bc*100:.0f}%)")
         print(f"  - active_segments: {rebound_config.active_segments}")
         print(f"  - order_segments: {rebound_config.order_segments}")
         
@@ -231,8 +231,8 @@ def print_strategy3_explanation():
    - 例如: 入场0.20 → 涨到0.36(+80%) → 回落到0.32(-11%) → 触发止盈
 
 3. 止损逻辑:
-   - 在C段(5-0分钟)，如果还没有止盈
-   - 检查亏损是否超过 stop_loss_stage_c (如20%)
+   - 在B段和C段(10-0分钟)，如果还没有止盈
+   - 检查亏损是否超过 stop_loss_stage_bc (如20%)
    - 超过则立即止损卖出，减少损失
    - 例如: 入场0.20 → 跌到0.16(-20%) → 触发止损
 

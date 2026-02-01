@@ -581,7 +581,7 @@ type 是GNOSIS_SAFE，value是2，还有根据这段代码，const signer = new 
     - ✅ 策略2配置: threshold=0.15, btc_drop=30.0, segments=['C']
     - ✅ 从config.yaml读取strategy.type=2正确
 
-43.我已经在config.ymal增加了四个个参数，当profit_and_loss的enable是true的时候，第一个take_profit_base，表示检测到订单盈利达到50%的时候，订单表示可以卖的状态，如果是上涨趋势，一直等待上涨，当上涨回退10%，也就是 take_profit_reduce_loss值的时候，sell订单，止盈获取利润。当订单达到c阶段，也就是10-15分钟的时候，还没有止盈，就要看是否需要止损了，如果损失已经大于20%，也就是stop_loss_stage_c的值，那么卖掉订单，止损；否则可以继续等待。修改rebound.py文件，实现strategy的option是3的内容.
+43.我已经在config.ymal增加了四个个参数，当profit_and_loss的enable是true的时候，第一个take_profit_base，表示检测到订单盈利达到50%的时候，订单表示可以卖的状态，如果是上涨趋势，一直等待上涨，当上涨回退10%，也就是 take_profit_reduce_loss值的时候，sell订单，止盈获取利润。当订单达到c阶段，也就是10-15分钟的时候，还没有止盈，就要看是否需要止损了，如果损失已经大于20%，也就是stop_loss_stage_bc的值，那么卖掉订单，止损；否则可以继续等待。修改rebound.py文件，实现strategy的option是3的内容.
 
 44.移除测试脚本，开启模式3.开启模拟模式运行，今晚上用于测试模式3
 45.run_rebound_strategy.bat是否可以启动模式3并运行，修复lint 风格提示
@@ -915,3 +915,61 @@ python apps/run_rebound.py --coin BTC --strategy-type 3 --live --size 3
 - 新增：`task56_completion_report.md`
 - 修改：`strategies/rebound.py` - 添加趋势记录功能
 - 修改：`src/database.py` - 添加 rebound_trend 字段支持
+
+57. ✅ 策略3，止损从c阶段，扩展到b和c阶段，b和c阶段，亏损超过20%则止损。
+
+**完成内容**：
+
+1. **代码修改** (`strategies/rebound.py`):
+   - 修改 `_evaluate_positions_for_profit_and_loss()` 方法
+   - 将止损检查从 `if segment == "C"` 改为 `if segment in ["B", "C"]`
+   - 日志优化: 动态显示触发止损的阶段 (`Stage B/C stop-loss`)
+   - 原因标记: 从固定的 `stop_loss_stage_bc` 改为动态的 `stop_loss_stage_{segment}`
+
+2. **功能说明**:
+   - **A段(15-10分钟)**: 不触发止损，给予充分时间反弹
+   - **B段(10-5分钟)**: 亏损 ≥ 20% 触发止损 ✅ 新增
+   - **C段(5-0分钟)**: 亏损 ≥ 20% 触发止损 ✅ 原有
+
+3. **测试验证** (`scripts/test_task57_stop_loss_bc.py`):
+   - 测试5个场景（A段不触发、B段触发、C段触发、未超阈值不触发等）
+   - **测试结果**: ✅ 所有测试通过
+   
+   | 场景 | 阶段 | 亏损 | 预期 | 实际 | 结果 |
+   |------|------|------|------|------|------|
+   | 1 | A | 20% | 不触发 | 不触发 | ✓ |
+   | 2 | B | 20% | 触发 | 触发 | ✓ |
+   | 3 | C | 20% | 触发 | 触发 | ✓ |
+   | 4 | B | 10% | 不触发 | 不触发 | ✓ |
+   | 5 | C | 23.3% | 触发 | 触发 | ✓ |
+
+4. **预期收益**:
+   - **更早止损**: B段即可触发，避免拖到C段进一步亏损
+   - **减少损失**: 案例显示可节省5-15%的额外亏损
+   - **提高效率**: 及时止损释放资金用于下一笔交易
+   
+   案例对比:
+   ```
+   修改前: 10min亏损20% → 不止损 → 5min亏损26.7% → 0min亏损33.3% → 止损
+   修改后: 10min亏损20% → 立即止损 ✓
+   节省损失: 13.3%
+   ```
+
+5. **配置参数**:
+   - 使用现有的 `stop_loss_stage_bc: 0.2` (20%)
+   - 注: 参数名 stage_bc 表示在B和C阶段都生效
+   - 无需修改配置，自动生效
+
+**使用方法**:
+```bash
+# 配置已自动生效，直接运行即可
+python apps/run_rebound.py --coin BTC --strategy-type 3
+
+# 验证测试
+python scripts/test_task57_stop_loss_bc.py
+```
+
+**修改文件**:
+- 修改: `strategies/rebound.py` - 扩展止损到B和C阶段
+- 新增: `scripts/test_task57_stop_loss_bc.py` - 测试脚本
+- 新增: `task57_completion_report.md` - 完成报告

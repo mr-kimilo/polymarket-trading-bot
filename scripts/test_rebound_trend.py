@@ -34,7 +34,7 @@ def test_rebound_trend_recording():
         profit_and_loss_enabled=True,
         take_profit_base=0.8,
         take_profit_reduce_loss=0.1,
-        stop_loss_stage_c=0.2
+        stop_loss_stage_bc=0.2
     )
     print(f"   ✓ 策略类型: {config.strategy_type}")
     print(f"   ✓ P&L enabled: {config.profit_and_loss_enabled}")

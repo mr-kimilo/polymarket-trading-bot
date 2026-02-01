@@ -122,8 +122,8 @@ class ReboundConfig:
     take_profit_base: float = 0.8
     # fraction (decimal) peak->trough drawdown to trigger take-profit reduce (e.g. 0.1 == 10%)
     take_profit_reduce_loss: float = 0.1
-    # fraction (decimal) loss threshold in stage C to trigger stop-loss (e.g. 0.2 == 20%)
-    stop_loss_stage_c: float = 0.2
+    # fraction (decimal) loss threshold in stage B and C to trigger stop-loss (e.g. 0.2 == 20%)
+    stop_loss_stage_bc: float = 0.2
 
     # Direct sell switch - when enabled, allows immediate selling of positions
     # Useful for manual intervention or emergency exits
@@ -1036,13 +1036,13 @@ class ReboundStrategy:
                         self._close_position(side, current_price, reason="take_profit")
                         continue
 
-            # If in stage C and no TP triggered, check stop-loss for stage C
+            # Stop-loss check for B and C stages (任务57: 扩展止损到B和C阶段)
             segment = self.get_current_segment()
-            if segment == "C":
+            if segment in ["B", "C"]:
                 loss_frac = (entry - current_price) / entry
-                if loss_frac >= self.config.stop_loss_stage_c:
-                    self.log(f"Stage C stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
-                    self._close_position(side, current_price, reason="stop_loss_stage_c")
+                if loss_frac >= self.config.stop_loss_stage_bc:
+                    self.log(f"Stage {segment} stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
+                    self._close_position(side, current_price, reason=f"stop_loss_stage_{segment.lower()}")
     
     def _reset_for_new_period(self) -> None:
         """为新的15分钟周期重置状态"""

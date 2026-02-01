@@ -113,7 +113,7 @@ class ReboundConfig:
     
     # Auto-claim设置
     auto_claim_enabled: bool = True  # 是否启用自动claim
-    auto_claim_min_balance: float = 10.0  # 最小余额阈值（USDC）
+    auto_claim_min_balance: float = 5.0  # 最小余额阈值（USDC）
     auto_claim_check_interval: int = 300  # 检查间隔（秒，默认5分钟）
 
     # Profit & Loss (P&L) settings (used by strategy_type == "3")
@@ -124,6 +124,10 @@ class ReboundConfig:
     take_profit_reduce_loss: float = 0.1
     # fraction (decimal) loss threshold in stage C to trigger stop-loss (e.g. 0.2 == 20%)
     stop_loss_stage_c: float = 0.2
+
+    # Direct sell switch - when enabled, allows immediate selling of positions
+    # Useful for manual intervention or emergency exits
+    direct_sell_enabled: bool = False
 
 
 @dataclass 
@@ -136,32 +140,98 @@ class PriceRecord:
 class ReboundStrategy:
 
     async def get_safe_sell_price(self, token_id: str, side: str) -> float:
-        """获取最安全的卖出价格，优先用midpoint，其次last price，最后盘口bid。"""
-        # 1. 优先用clob_client.get_market_price(token_id)的midpoint
+        """
+        获取最安全的卖出价格。
+        
+        优先级：
+        1. CLOB midpoint (最稳定)
+        2. Last trade price
+        3. Orderbook best bid
+        4. 兜底价格 0.01
+        
+        Args:
+            token_id: Market token ID
+            side: Position side ("up" or "down")
+            
+        Returns:
+            Safe sell price (0 < price < 1)
+        """
+        from decimal import Decimal
+        
+        clob_client = getattr(self.bot, 'clob_client', None)
+        if not clob_client:
+            self.log("[WARN] get_safe_sell_price: No clob_client available", "warning")
+            return 0.01
+        
+        # Get tick size for proper price adjustment
         try:
-            clob_client = getattr(self.bot, 'clob_client', None)
-            if clob_client:
-                price_data = clob_client.get_market_price(token_id)
-                midpoint = float(price_data.get('midpoint', 0))
-                if midpoint and 0 < midpoint < 1:
-                    return round(midpoint - 0.005, 3)
-                last = float(price_data.get('last', 0))
-                if last and 0 < last < 1:
-                    return round(last - 0.01, 3)
+            tick_size_str = clob_client.get_tick_size(token_id)
+            tick_size = Decimal(tick_size_str)
+        except Exception:
+            tick_size_str = "0.01"
+            tick_size = Decimal("0.01")
+        
+        sell_price = None
+        
+        # 1. Try midpoint first (most stable)
+        try:
+            midpoint = clob_client.get_midpoint(token_id)
+            if midpoint and 0 < midpoint < 1:
+                # Slightly below midpoint to increase fill probability
+                sell_price = midpoint - float(tick_size)
+                self.log(f"[INFO] Using midpoint price: {midpoint} -> {sell_price}", "info")
         except Exception as e:
-            self.log(f"[WARN] get_safe_sell_price: {e}", "warning")
-        # 2. 盘口bid兜底
-        orderbook = None
-        if hasattr(self, 'market') and self.market:
-            orderbook = self.market.get_orderbook(side)
-        best_bid = orderbook.best_bid if orderbook and orderbook.best_bid > 0 else 0.0
-        sell_price = best_bid if best_bid > 0 else 0.01
-        sell_price = round(sell_price, 2)
-        if sell_price >= 1.0:
-            sell_price = 0.99
-        if sell_price <= 0.01:
+            self.log(f"[WARN] get_midpoint failed: {e}", "warning")
+        
+        # 2. Try last trade price
+        if not sell_price or sell_price <= 0 or sell_price >= 1:
+            try:
+                last_price = clob_client.get_last_trade_price(token_id)
+                if last_price and 0 < last_price < 1:
+                    sell_price = last_price - float(tick_size)
+                    self.log(f"[INFO] Using last trade price: {last_price} -> {sell_price}", "info")
+            except Exception as e:
+                self.log(f"[WARN] get_last_trade_price failed: {e}", "warning")
+        
+        # 3. Try orderbook best bid
+        if not sell_price or sell_price <= 0 or sell_price >= 1:
+            try:
+                ob_data = clob_client.get_order_book(token_id)
+                bids = ob_data.get("bids", [])
+                if bids:
+                    # Get best bid (highest bid price)
+                    best_bid = max(float(b.get("price", 0)) for b in bids if float(b.get("price", 0)) > 0.01)
+                    if best_bid and best_bid > 0.01:
+                        sell_price = best_bid
+                        self.log(f"[INFO] Using orderbook best bid: {sell_price}", "info")
+            except Exception as e:
+                self.log(f"[WARN] get_order_book failed: {e}", "warning")
+        
+        # 4. Fallback to local orderbook if available
+        if not sell_price or sell_price <= 0 or sell_price >= 1:
+            if hasattr(self, 'market') and self.market:
+                orderbook = self.market.get_orderbook(side)
+                if orderbook and orderbook.best_bid > 0.01:
+                    sell_price = orderbook.best_bid
+                    self.log(f"[INFO] Using local orderbook best bid: {sell_price}", "info")
+        
+        # 5. Final fallback
+        if not sell_price or sell_price <= 0:
             sell_price = 0.01
-        return sell_price
+            self.log(f"[WARN] Using fallback price: {sell_price}", "warning")
+        
+        # Adjust to tick size and ensure bounds
+        sell_price_dec = Decimal(str(sell_price))
+        adjusted = (sell_price_dec // tick_size) * tick_size
+        adjusted = float(adjusted)
+        
+        # Ensure price is within valid bounds
+        if adjusted <= 0:
+            adjusted = float(tick_size)
+        if adjusted >= 1:
+            adjusted = 1.0 - float(tick_size)
+        
+        return adjusted
     """
     Rebound反弹交易策略
     
@@ -564,6 +634,91 @@ class ReboundStrategy:
             return True
         
         return False
+
+    async def direct_sell_all_positions(self, reason: str = "direct_sell") -> Dict[str, bool]:
+        """
+        直接卖出所有持仓（紧急退出/手动干预）
+        
+        当 config.direct_sell_enabled 为 True 时可用。
+        该方法会立即以市价卖出所有活跃持仓。
+        
+        Args:
+            reason: 卖出原因，用于日志记录
+            
+        Returns:
+            Dict[side, success] 每个持仓的卖出结果
+        """
+        results = {}
+        
+        if not self.config.direct_sell_enabled:
+            self.log("[WARN] Direct sell is disabled. Set direct_sell_enabled=True to enable.", "warning")
+            return results
+        
+        if not self._active_positions:
+            self.log("[INFO] No active positions to sell.", "info")
+            return results
+        
+        self.log(f"[DIRECT_SELL] Starting direct sell for {len(self._active_positions)} position(s). Reason: {reason}", "warning")
+        
+        for side, pos_info in list(self._active_positions.items()):
+            try:
+                token_id = pos_info.get("token_id") or self.token_ids.get(side)
+                size = pos_info.get("size", 0)
+                entry_price = pos_info.get("entry_price", 0)
+                db_id = pos_info.get("db_id")
+                
+                if not token_id or size <= 0:
+                    self.log(f"[DIRECT_SELL] Invalid position for {side}: token_id={token_id}, size={size}", "error")
+                    results[side] = False
+                    continue
+                
+                # Get safe sell price
+                sell_price = await self.get_safe_sell_price(token_id, side)
+                
+                if self.config.simulation_mode:
+                    # Simulated mode - just log and update DB
+                    exit_price = self.prices.get_current_price(side)
+                    if exit_price <= 0:
+                        exit_price = sell_price
+                    
+                    pnl = (exit_price - entry_price) * size
+                    pnl_percent = (exit_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
+                    
+                    if db_id:
+                        self.db.update_rebound_order_result(
+                            order_id=db_id,
+                            exit_price=exit_price,
+                            exit_btc_price=self.btc_price_current,
+                            pnl=pnl,
+                            pnl_percent=pnl_percent,
+                            status=OrderStatus.CLOSED.value
+                        )
+                    
+                    color = Colors.GREEN if pnl >= 0 else Colors.RED
+                    self.log(
+                        f"[SIMULATED DIRECT_SELL] Sold {side.upper()} @ {exit_price:.4f} "
+                        f"PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET}",
+                        "success" if pnl >= 0 else "warning"
+                    )
+                    results[side] = True
+                else:
+                    # LIVE mode - execute real sell
+                    await self._execute_close_live(side, sell_price, pos_info, db_id, reason=f"direct_sell:{reason}")
+                    results[side] = True
+                
+                # Cleanup
+                if side in self._position_peak_price:
+                    del self._position_peak_price[side]
+                if side in self._active_positions:
+                    del self._active_positions[side]
+                    
+            except Exception as e:
+                self.log(f"[DIRECT_SELL] Error selling {side}: {e}", "error")
+                results[side] = False
+        
+        self._current_period_orders.clear()
+        self.log(f"[DIRECT_SELL] Completed. Results: {results}", "info")
+        return results
     
     def _close_all_positions(self, use_prices: Optional[Dict[str, float]] = None) -> None:
         """

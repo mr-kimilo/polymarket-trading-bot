@@ -32,6 +32,7 @@ Example:
 import os
 import asyncio
 import logging
+from decimal import Decimal
 from typing import Optional, Dict, Any, List, Callable, TypeVar
 from dataclasses import dataclass, field
 from enum import Enum
@@ -314,11 +315,31 @@ class TradingBot:
         signer = self.require_signer()
 
         try:
-            # Create order
+            # Get tick size for this market and adjust price
+            tick_size_str = await self._run_in_thread(
+                self.clob_client.get_tick_size,
+                token_id
+            )
+            
+            # Adjust price to tick size multiple
+            adjusted_price = self._adjust_price_to_tick(price, tick_size_str)
+            
+            # Ensure price is within valid bounds (0, 1)
+            if adjusted_price <= 0:
+                adjusted_price = Decimal(tick_size_str)
+            if adjusted_price >= 1:
+                adjusted_price = Decimal("1") - Decimal(tick_size_str)
+            
+            # Round size to 2 decimals (required by API)
+            adjusted_size = round(size, 2)
+            
+            logger.info(f"Adjusted price: {price} -> {adjusted_price} (tick_size={tick_size_str})")
+            
+            # Create order with adjusted price
             order = Order(
                 token_id=token_id,
-                price=price,
-                size=size,
+                price=float(adjusted_price),
+                size=adjusted_size,
                 side=side,
                 maker=self.config.safe_address,
                 fee_rate_bps=fee_rate_bps,
@@ -333,8 +354,9 @@ class TradingBot:
             # Sign order with correct exchange contract
             signed = signer.sign_order(order, neg_risk=neg_risk)
 
-            #print close order body
-            logger.error(f"print order body: {order}")
+            # Print order body for debugging
+            logger.info(f"Order body: side={side}, price={adjusted_price}, size={adjusted_size}, fee={fee_rate_bps}")
+            
             # Submit to CLOB
             response = await self._run_in_thread(
                 self.clob_client.post_order,
@@ -343,7 +365,7 @@ class TradingBot:
             )
 
             logger.info(
-                f"Order placed: {side} {size}@{price} "
+                f"Order placed: {side} {adjusted_size}@{adjusted_price} "
                 f"(token: {token_id[:16]}...)"
             )
 
@@ -355,6 +377,25 @@ class TradingBot:
                 success=False,
                 message=str(e)
             )
+
+    def _adjust_price_to_tick(self, price: float, tick_size_str: str) -> Decimal:
+        """
+        Adjust price to be a multiple of tick size.
+
+        Args:
+            price: Original price
+            tick_size_str: Tick size as string (e.g., "0.01")
+
+        Returns:
+            Adjusted price as Decimal
+        """
+        tick = Decimal(tick_size_str)
+        price_dec = Decimal(str(price))
+        
+        # Round down to nearest tick (conservative, helps with filling)
+        adjusted = (price_dec // tick) * tick
+        
+        return adjusted
 
     async def place_orders(
         self,

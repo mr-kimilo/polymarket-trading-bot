@@ -66,6 +66,46 @@ def load_strategy_type_from_config() -> str:
     return "1"  # 默认策略1
 
 
+def load_direct_sell_from_config() -> bool:
+    """从config.yaml加载direct_sell配置"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return config.get("direct_sell", {}).get("enabled", False)
+        except Exception:
+            pass
+    return False
+
+
+def load_auto_claim_from_config() -> dict:
+    """从config.yaml加载auto_claim配置"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    defaults = {
+        "enabled": True,
+        "min_balance": 5.0,
+        "check_interval": 300  # 秒
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            auto_claim = config.get("auto_claim", {})
+            
+            # 从配置中获取值，check_interval需要从分钟转换为秒
+            return {
+                "enabled": auto_claim.get("enabled", defaults["enabled"]),
+                "min_balance": auto_claim.get("min_balance", defaults["min_balance"]),
+                "check_interval": auto_claim.get("check_interval", 5) * 60  # 分钟转秒
+            }
+        except Exception as e:
+            print(f"{Colors.YELLOW}Warning: Failed to load auto_claim config: {e}{Colors.RESET}")
+    
+    return defaults
+
+
 def main():
     """Main entry point."""
     # 首先从config.yaml加载strategy.type
@@ -223,6 +263,12 @@ def main():
     # Create strategy config
     active_segments = [s.strip().upper() for s in segments.split(",")]
     
+    # Load direct_sell setting from config
+    direct_sell_enabled = load_direct_sell_from_config()
+    
+    # Load auto_claim settings from config
+    auto_claim_config = load_auto_claim_from_config()
+    
     strategy_config = ReboundConfig(
         strategy_type=final_strategy_type,
         coin=args.coin,
@@ -230,7 +276,11 @@ def main():
         price_drop_threshold=drop_threshold,
         btc_drop_max=btc_drop_max,
         active_segments=active_segments,
-        simulation_mode=simulation_mode
+        simulation_mode=simulation_mode,
+        direct_sell_enabled=direct_sell_enabled,
+        auto_claim_enabled=auto_claim_config["enabled"],
+        auto_claim_min_balance=auto_claim_config["min_balance"],
+        auto_claim_check_interval=auto_claim_config["check_interval"]
     )
 
     # Create and run strategy

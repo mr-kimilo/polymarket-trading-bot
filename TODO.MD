@@ -736,3 +736,103 @@ order = Order(
 )
 
 # 继续 neg_risk、sign、post
+
+54. ✅ 阅读43到53的任务，修复卖出订单问题并优化卖出逻辑
+
+**问题a - 卖出订单失败修复**：
+- 在 `src/client.py` 中添加了 `get_tick_size()` 方法，从 CLOB API 获取市场的最小价格增量
+- 在 `src/bot.py` 的 `place_order()` 方法中添加了动态 tick_size 支持
+- 添加了 `_adjust_price_to_tick()` 方法，确保价格是 tick_size 的整数倍
+- 价格现在使用 Decimal 类型处理，避免浮点数精度问题
+
+**问题b - 卖出逻辑优化**：
+- 重写了 `strategies/rebound.py` 中的 `get_safe_sell_price()` 方法
+- 价格获取优先级：
+  1. CLOB midpoint（最稳定）
+  2. Last trade price
+  3. Orderbook best bid  
+  4. 本地 orderbook
+  5. 兜底价格 0.01
+- 所有价格都会根据 tick_size 自动调整
+- 添加了 `src/client.py` 中的 `get_midpoint()` 和 `get_last_trade_price()` 方法
+
+**问题c - 直接卖出开关**：
+- 在 `ReboundConfig` 中添加了 `direct_sell_enabled` 配置项
+- 在 `config.yaml` 中添加了 `direct_sell.enabled` 配置
+- 添加了 `direct_sell_all_positions()` 异步方法，支持紧急退出/手动干预
+- 创建了 `scripts/direct_sell.py` 脚本用于手动执行直接卖出
+- 创建了 `direct_sell.bat` 批处理文件，支持选择模拟/真实模式
+
+**修改的文件**：
+- `src/client.py`: 添加 get_tick_size(), get_midpoint(), get_last_trade_price()
+- `src/bot.py`: 添加动态 tick_size 支持和 _adjust_price_to_tick()
+- `strategies/rebound.py`: 重写 get_safe_sell_price(), 添加 direct_sell_all_positions()
+- `apps/run_rebound.py`: 添加 load_direct_sell_from_config()
+- `config.yaml`: 添加 direct_sell 配置
+- `scripts/direct_sell.py`: 新建直接卖出脚本
+- `direct_sell.bat`: 新建直接卖出批处理文件
+
+**使用方法**：
+```bash
+# 启用直接卖出功能（在 config.yaml 中设置）
+direct_sell:
+  enabled: true
+
+# 或运行直接卖出脚本
+python scripts/direct_sell.py --coin BTC --live
+# 或使用批处理
+direct_sell.bat
+```
+
+55. ✅ 检查并修复自动claim功能
+
+**问题分析**：
+- 检查发现 `py-builder-relayer-client` 模块未安装
+- config.yaml 中的 `auto_claim.min_balance` 设置为 10.0，需要改为 5.0
+- config.yaml 中的 `check_interval` 单位是分钟，但代码中需要转换为秒
+- `apps/run_rebound.py` 在创建 `ReboundConfig` 时没有加载 auto_claim 配置
+
+**修复内容**：
+1. **安装缺失依赖**：
+   - 安装 `py-builder-relayer-client` 和 `py-builder-signing-sdk`
+   - 验证 RelayClient 可以正常初始化
+
+2. **更新配置**：
+   - 修改 `config.yaml` 中的 `auto_claim.min_balance` 从 10.0 改为 5.0
+   - 修改 `strategies/rebound.py` 中的默认值 `auto_claim_min_balance` 从 10.0 改为 5.0
+
+3. **修复配置加载**：
+   - 在 `apps/run_rebound.py` 中添加 `load_auto_claim_from_config()` 函数
+   - 从 config.yaml 加载 auto_claim 配置（enabled, min_balance, check_interval）
+   - 正确处理单位转换：check_interval 从分钟转换为秒
+   - 在创建 ReboundConfig 时传入 auto_claim 配置参数
+
+4. **API接口验证**：
+   - 测试 Polymarket Data API (`/positions?redeemable=true`) 正常工作
+   - 接口返回数据结构未变化
+   - 数据包含 `redeemable`, `currentValue`, `negativeRisk` 等字段
+
+**验证测试**：
+- 运行 `scripts/test_auto_claim.py` 验证功能正常
+- 运行 `scripts/verify_auto_claim_config.py` 验证配置加载正确
+- RelayClient 成功初始化
+- USDC 余额查询正常
+- 可赎回仓位查询正常
+
+**修改的文件**：
+- `config.yaml`: 更新 auto_claim.min_balance 为 5.0
+- `strategies/rebound.py`: 更新默认 auto_claim_min_balance 为 5.0
+- `apps/run_rebound.py`: 添加 load_auto_claim_from_config() 函数和配置加载
+- 依赖安装: py-builder-relayer-client, py-builder-signing-sdk
+
+**当前配置**：
+- auto_claim.enabled: true
+- auto_claim.min_balance: $5.0
+- auto_claim.check_interval: 60 分钟（3600秒）
+
+**使用说明**：
+当 Rebound 策略运行时（非模拟模式），会自动：
+1. 每60分钟检查一次 USDC 余额
+2. 如果余额 < $5.00，查询可赎回仓位
+3. 通过 Relayer 执行 gasless 交易赎回获胜仓位
+4. 更新余额后继续交易

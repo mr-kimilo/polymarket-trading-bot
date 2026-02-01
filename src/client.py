@@ -469,6 +469,80 @@ class ClobClient(ApiClient):
             params={"token_id": token_id}
         )
 
+    def get_tick_size(self, token_id: str) -> str:
+        """
+        Get tick size for a token/market.
+
+        Tick size is the minimum price increment for a market.
+        Possible values: "0.1", "0.01", "0.001", "0.0001"
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Tick size as string (e.g., "0.01")
+        """
+        # Use cache if available
+        if not hasattr(self, '_tick_size_cache'):
+            self._tick_size_cache = {}
+
+        if token_id in self._tick_size_cache:
+            return self._tick_size_cache[token_id]
+
+        try:
+            result = self._request(
+                "GET",
+                "/tick-size",
+                params={"token_id": token_id}
+            )
+            tick_size = result.get("minimum_tick_size", "0.01")
+            self._tick_size_cache[token_id] = tick_size
+            return tick_size
+        except Exception:
+            # Default to 0.01 if we can't determine
+            return "0.01"
+
+    def get_midpoint(self, token_id: str) -> float:
+        """
+        Get midpoint price for a token.
+
+        Midpoint is (best_bid + best_ask) / 2, which is usually
+        the most stable price indicator.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Midpoint price as float
+        """
+        try:
+            result = self._request(
+                "GET",
+                "/midpoint",
+                params={"token_id": token_id}
+            )
+            mid = result.get("mid", 0)
+            return float(mid) if mid else 0.0
+        except Exception:
+            return 0.0
+
+    def get_last_trade_price(self, token_id: str) -> float:
+        """
+        Get last trade price for a token.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Last trade price as float
+        """
+        try:
+            price_data = self.get_market_price(token_id)
+            last = price_data.get("last", 0)
+            return float(last) if last else 0.0
+        except Exception:
+            return 0.0
+
     def get_open_orders(self) -> List[Dict[str, Any]]:
         """
         Get all open orders for the funder.

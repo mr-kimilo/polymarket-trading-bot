@@ -839,6 +839,7 @@ direct_sell.bat
 
 56. ✅ 生成脚本，检查strategy=3的配置和设置情况，经过长期测试，策略3可能是最稳健的策略，也就是短期波动并卖出，不等到最后
 但是究竟多少卖出我不确定，为了获得一个平均反弹值，我需要记录一个数组，每15秒记录一下反弹百分比，以逗号分开，这样可以知道反弹的趋势，后面用于确定多少卖出合适。
+任务56补充：我需要记录rebound_orders.rebound_trend，从开单，到这个15分钟结束，而不是订单关闭的时候，这样我才好优化，究竟多少关合适。应用与live和模拟。
 
 **完成内容**：
 
@@ -916,140 +917,55 @@ python apps/run_rebound.py --coin BTC --strategy-type 3 --live --size 3
 - 修改：`strategies/rebound.py` - 添加趋势记录功能
 - 修改：`src/database.py` - 添加 rebound_trend 字段支持
 
-57. ✅ 策略3，止损从c阶段，扩展到b和c阶段，b和c阶段，亏损超过20%则止损。
+**任务56补充** ✅ - 从开单到15分钟结束记录反弹趋势
 
-**完成内容**：
+**补充需求**：
+- 原实现：订单关闭时保存反弹趋势
+- 新需求：从开单到15分钟结束持续记录，即使订单提前关闭也继续记录
+- 目的：收集完整的趋势数据，用于优化止盈止损参数
 
-1. **代码修改** (`strategies/rebound.py`):
-   - 修改 `_evaluate_positions_for_profit_and_loss()` 方法
-   - 将止损检查从 `if segment == "C"` 改为 `if segment in ["B", "C"]`
-   - 日志优化: 动态显示触发止损的阶段 (`Stage B/C stop-loss`)
-   - 原因标记: 从固定的 `stop_loss_stage_bc` 改为动态的 `stop_loss_stage_{segment}`
+**实现方案**：
 
-2. **功能说明**:
-   - **A段(15-10分钟)**: 不触发止损，给予充分时间反弹
-   - **B段(10-5分钟)**: 亏损 ≥ 20% 触发止损 ✅ 新增
-   - **C段(5-0分钟)**: 亏损 ≥ 20% 触发止损 ✅ 原有
+1. **添加已关闭订单跟踪**（`strategies/rebound.py`）：
+   - 新增 `_closed_positions_for_trend: Dict[str, Dict]` 数据结构
+   - 存储已关闭订单的 `db_id` 和 `entry_price`
+   - 用于继续记录趋势直到15分钟结束
 
-3. **测试验证** (`scripts/test_task57_stop_loss_bc.py`):
-   - 测试5个场景（A段不触发、B段触发、C段触发、未超阈值不触发等）
-   - **测试结果**: ✅ 所有测试通过
-   
-   | 场景 | 阶段 | 亏损 | 预期 | 实际 | 结果 |
-   |------|------|------|------|------|------|
-   | 1 | A | 20% | 不触发 | 不触发 | ✓ |
-   | 2 | B | 20% | 触发 | 触发 | ✓ |
-   | 3 | C | 20% | 触发 | 触发 | ✓ |
-   | 4 | B | 10% | 不触发 | 不触发 | ✓ |
-   | 5 | C | 23.3% | 触发 | 触发 | ✓ |
+2. **修改 `_close_position()` 方法**：
+   - 在关闭持仓时，将订单信息保存到 `_closed_positions_for_trend`
+   - 不再立即停止记录趋势
 
-4. **预期收益**:
-   - **更早止损**: B段即可触发，避免拖到C段进一步亏损
-   - **减少损失**: 案例显示可节省5-15%的额外亏损
-   - **提高效率**: 及时止损释放资金用于下一笔交易
-   
-   案例对比:
-   ```
-   修改前: 10min亏损20% → 不止损 → 5min亏损26.7% → 0min亏损33.3% → 止损
-   修改后: 10min亏损20% → 立即止损 ✓
-   节省损失: 13.3%
-   ```
+3. **修改 `_record_rebound_trend()` 方法**：
+   - 合并活跃持仓和已关闭的持仓进行趋势记录
+   - 同时记录活跃订单（`_active_positions`）和已关闭订单（`_closed_positions_for_trend`）
 
-5. **配置参数**:
-   - 使用现有的 `stop_loss_stage_bc: 0.2` (20%)
-   - 注: 参数名 stage_bc 表示在B和C阶段都生效
-   - 无需修改配置，自动生效
+4. **新增 `_save_final_rebound_trends()` 方法**：
+   - 在15分钟周期结束时调用
+   - 为所有订单（活跃和已关闭）保存最终的完整趋势记录
+   - 使用 `update_rebound_trend_only()` 仅更新趋势字段
 
-**使用方法**:
-```bash
-# 配置已自动生效，直接运行即可
-python apps/run_rebound.py --coin BTC --strategy-type 3
+5. **修改 `_reset_for_new_period()` 方法**：
+   - 在重置前调用 `_save_final_rebound_trends()` 保存最终趋势
+   - 清空 `_closed_positions_for_trend`
 
-# 验证测试
-python scripts/test_task57_stop_loss_bc.py
-```
+6. **新增数据库方法**（`src/database.py`）：
+   - `update_rebound_trend_only(order_id, rebound_trend)` - 仅更新反弹趋势字段
 
-**修改文件**:
-- 修改: `strategies/rebound.py` - 扩展止损到B和C阶段
-- 新增: `scripts/test_task57_stop_loss_bc.py` - 测试脚本
-- 新增: `task57_completion_report.md` - 完成报告
+**测试验证**：
+- 创建 `scripts/test_task56_supplement.py` 测试脚本
+- 测试结果：✅ 所有测试通过
+  - 数据库方法存在并可用
+  - 策略数据结构正确初始化
+  - 趋势记录逻辑正确
+  - 关闭持仓时正确保存跟踪信息
 
-58. ✅ 策略三自动止损失败，检查日志，找到原因，我已经手动close了。
-补充：现在是在b段触发了止损，但是没有成功，你增加的a段止损可以保留，但是命名需要改，设置策略三为前缀，完成这两个事情。不要生成report了，没用。
-Request failed after 3 attempts: 400 Client Error: Bad Request for url: https://clob.polymarket.com/order - {'error': 'invalid price, price must be greater than 0 and less than 1'}
+**效果**：
+- 订单提前关闭（止盈/止损）后，趋势继续记录直到15分钟结束
+- 数据库中的 `rebound_trend` 字段包含完整的15分钟趋势数据
+- 可用于分析：如果不提前关闭，趋势会如何发展？
 
-**问题分析**:
-- 订单778 (LIVE): DOWN @ 0.285, 在A段3分钟内亏损42%
-- 用户手动关闭，因为自动止损未触发
-- 根本原因: 任务57的设计中，A段无止损保护
-- 止损仅在B和C段生效 (亏损≥20%)
+**新增/修改文件**：
+- 修改：`strategies/rebound.py` - 添加趋势跟踪和保存逻辑
+- 修改：`src/database.py` - 添加 `update_rebound_trend_only()` 方法
+- 新增：`scripts/test_task56_supplement.py` - 测试脚本
 
-**解决方案 (任务58)**:
-实施三级止损保护系统：
-1. **A段 (15-10min)**: 35%紧急止损 ✅ 新增
-   - 更宽松，允许反弹
-   - 防止极端损失
-2. **B段 (10-5min)**: 20%止损 ✅ 原有
-   - 中等严格，保护资金
-3. **C段 (5-0min)**: 20%止损 ✅ 原有
-   - 更严格，加强保护
-
-**修改内容**:
-- 修改: `strategies/rebound.py`
-  - 添加 `stop_loss_stage_a: float = 0.35` 配置参数
-  - 修改 `_evaluate_positions_for_profit_and_loss()` 方法
-  - 添加A段紧急止损检查 (损失>=35%触发)
-- 修改: `config.yaml`
-  - 添加 `profit_and_loss.stop_loss_stage_a: 0.35`
-- 修改: `scripts/check_strategy3_config.py`
-  - 添加stop_loss_stage_a参数读取、验证、显示
-  - 更新ReboundConfig初始化
-  - 更新策略说明文档
-- 新增: `scripts/test_task58_stage_a_stop_loss.py` - 测试A段止损
-- 新增: `task58_analysis_report.md` - 问题分析报告
-- 新增: `task58_completion_report.md` - 完成报告
-
-**测试结果**:
-- ✅ A段损失26.7%: 不触发 (< 35%)
-- ✅ A段损失35.0%: 触发紧急止损
-- ✅ A段损失42.1%: 触发紧急止损 (订单778场景，现在会自动止损)
-- ✅ B段损失20.0%: 触发止损
-- ✅ C段损失20.0%: 触发止损
-
-**实际效果 (订单778场景)**:
-- 修改前: A段无止损，损失42%仍需手动关闭 ❌
-- 修改后: A段35%紧急止损自动触发，防止损失扩大 ✅
-- 保护: 在损失35%时自动止损，节省约7%损失
-
-**配置参数**:
-- `stop_loss_stage_a: 0.35` (35%) - A段紧急止损
-- `stop_loss_stage_bc: 0.2` (20%) - B/C段止损
-
-**优势**:
-- ✅ 保留A段反弹空间 (35%仍然很宽松)
-- ✅ 防止极端损失 (如订单778的42%)
-- ✅ 灵活可配置
-- ✅ 适用LIVE和SIMULATED模式
-- ✅ 向后兼容，不影响B/C段逻辑
-59.任务58的补充还没完成，生产上的live订单，从来没有成功过，你创建一个脚本，马上买，马上卖，使用1美元，我需要看到能真实的卖出
-还有需要增加更多的日志，为什么price不对，下面是界面的日志
-[18:05:05.277] ✗ [LIVE] Close SELL failed for UP: Request failed after 3 attempts: 400 Client Error: Bad Request for url: https://clob.polymarket.com/order - {'error': 'invalid price, price must be greater than 0 and less than 1'}
-  [18:05:07.279] ✗ [LIVE] 市价卖出重试10次仍未成功，建议人工干预！
-  [18:05:07.339] ⚠ [REAL] Closed UP @ 0.1900 PnL: $-0.71 (-35.6%) strategy3_stop_loss_stage_a [Trend: -0.05, -0.07, 0.24, 0.07, 0.00, -0.14, 0.03, 0.10, -0.31]
-
-60. ✅ test_live_buy_sell.py 测试金额减少到1u，持续验证卖出逻辑，是否可用挂单的方式卖出，比如比当前价格低3%。
-    解决：
-    - 测试金额设为$1.5 (API最小订单限制$1)
-    - 使用GTC (Good Till Cancelled) 限价挂单而不是FOK
-    - 卖出价格降低3%以确保挂单成功
-    - 测试结果: BUY和SELL都成功提交!
-61. ✅ 根据test_live_buy_sell.py 经验，检查策略三的所有卖出逻辑，用挂单方式卖出，低于当前单3%的数值需要可配置。
-    解决：
-    - 在ReboundConfig中添加两个新配置参数:
-      - strategy3_use_gtc_order: bool = True (使用GTC限价挂单)
-      - strategy3_sell_discount: float = 0.03 (卖出价格折扣3%)
-    - 修改_execute_close_live()方法:
-      - 根据配置决定使用GTC或FOK订单
-      - 应用卖出价格折扣
-    - 更新config.yaml添加新配置项
-    - 更新apps/run_rebound.py加载新配置

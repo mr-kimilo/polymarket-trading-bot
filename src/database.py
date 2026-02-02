@@ -380,6 +380,43 @@ class Database:
             logger.error(f"Failed to update rebound order: {e}")
             return False
     
+    def update_rebound_trend_only(
+        self,
+        order_id: int,
+        rebound_trend: str
+    ) -> bool:
+        """
+        仅更新Rebound订单的反弹趋势记录 (任务56补充)
+        
+        用于在15分钟周期结束时更新趋势记录，即使订单已提前关闭。
+        这样可以记录从开单到15分钟结束的完整趋势，而不是订单关闭时的趋势。
+        
+        Args:
+            order_id: 订单ID
+            rebound_trend: 反弹趋势记录 (逗号分隔的百分比字符串)
+            
+        Returns:
+            是否更新成功
+        """
+        if not self._conn:
+            logger.warning("Database not connected. Trend not updated.")
+            return False
+            
+        update_sql = """
+        UPDATE rebound_orders
+        SET rebound_trend = %s
+        WHERE id = %s;
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(update_sql, (rebound_trend, order_id))
+                logger.info(f"Updated rebound trend for order {order_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to update rebound trend: {e}")
+            return False
+    
     def get_rebound_order(self, order_id: int) -> Optional[ReboundOrder]:
         """
         获取单个订单

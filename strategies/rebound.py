@@ -318,6 +318,11 @@ class ReboundStrategy:
         }
         self._last_trend_record_time: float = 0
         self._trend_record_interval: float = 15.0  # 每15秒记录一次
+        
+        # 任务56补充：已关闭订单的趋势跟踪
+        # 即使订单提前关闭，也继续记录趋势直到15分钟结束
+        # side -> {"db_id": int, "entry_price": float}
+        self._closed_positions_for_trend: Dict[str, Dict] = {}
 
         # Auto-claim
         self._last_claim_check: float = 0
@@ -558,10 +563,13 @@ class ReboundStrategy:
     
     def _record_rebound_trend(self) -> None:
         """
-        记录反弹趋势 (任务56)
+        记录反弹趋势 (任务56 + 任务56补充)
         
         每15秒记录一次UP和DOWN的反弹百分比，用于后续分析最佳止盈点。
-        反弹百分比 = (当前价格 - 开始价格) / 开始价格
+        反弹百分比 = (当前价格 - 入场价格) / 入场价格
+        
+        任务56补充：即使订单提前关闭，也继续记录趋势直到15分钟结束。
+        这样可以分析从开单到周期结束的完整趋势，用于优化止盈止损参数。
         """
         now = time.time()
         
@@ -569,17 +577,36 @@ class ReboundStrategy:
         if now - self._last_trend_record_time < self._trend_record_interval:
             return
         
-        # 只在有持仓时记录
-        if not self._active_positions:
+        # 更新最后记录时间（放在前面，避免重复记录）
+        self._last_trend_record_time = now
+        
+        # 合并活跃持仓和已关闭但需要继续记录趋势的持仓
+        positions_to_track: Dict[str, Dict] = {}
+        
+        # 1. 活跃持仓
+        for side, pos in self._active_positions.items():
+            positions_to_track[side] = {
+                "entry_price": pos.get("entry_price", 0),
+                "db_id": pos.get("db_id"),
+                "is_active": True
+            }
+        
+        # 2. 已关闭但仍需记录趋势的持仓（任务56补充）
+        for side, closed_info in self._closed_positions_for_trend.items():
+            if side not in positions_to_track:  # 避免重复
+                positions_to_track[side] = {
+                    "entry_price": closed_info.get("entry_price", 0),
+                    "db_id": closed_info.get("db_id"),
+                    "is_active": False
+                }
+        
+        # 如果没有需要跟踪的持仓，直接返回
+        if not positions_to_track:
             return
         
         # 记录每个持仓的反弹百分比
-        for side in ["up", "down"]:
-            if side not in self._active_positions:
-                continue
-            
-            pos = self._active_positions[side]
-            entry_price = pos.get("entry_price", 0)
+        for side, info in positions_to_track.items():
+            entry_price = info.get("entry_price", 0)
             if entry_price <= 0:
                 continue
             
@@ -594,14 +621,12 @@ class ReboundStrategy:
             self._rebound_trend_records[side].append(rebound_pct)
             
             # 记录日志（debug级别）
+            status = "ACTIVE" if info.get("is_active") else "CLOSED"
             self.log(
-                f"[TREND] {side.upper()} rebound: {rebound_pct:.2%} "
+                f"[TREND] {side.upper()} ({status}) rebound: {rebound_pct:.2%} "
                 f"(entry={entry_price:.4f}, current={current_price:.4f})",
                 "debug"
             )
-        
-        # 更新最后记录时间
-        self._last_trend_record_time = now
     
     def _get_rebound_trend_summary(self, side: str) -> str:
         """
@@ -620,6 +645,55 @@ class ReboundStrategy:
         # 格式化为百分比字符串（保留2位小数）
         pct_strings = [f"{r:.2f}" for r in records]
         return ", ".join(pct_strings)
+    
+    def _save_final_rebound_trends(self) -> None:
+        """
+        任务56补充：在15分钟周期结束时保存所有订单的最终反弹趋势
+        
+        这个方法会为以下订单更新反弹趋势：
+        1. 已提前关闭的订单 (_closed_positions_for_trend)
+        2. 仍然活跃的订单 (_active_positions)
+        
+        趋势记录是从开单到15分钟结束的完整记录，而不是订单关闭时的记录。
+        这样可以分析完整的价格走势，用于优化止盈止损参数。
+        """
+        # 收集所有需要更新趋势的订单
+        orders_to_update: List[Tuple[str, int]] = []  # (side, db_id)
+        
+        # 1. 已提前关闭的订单
+        for side, info in self._closed_positions_for_trend.items():
+            db_id = info.get("db_id")
+            if db_id:
+                orders_to_update.append((side, db_id))
+        
+        # 2. 仍然活跃的订单
+        for side, pos in self._active_positions.items():
+            db_id = pos.get("db_id")
+            if db_id:
+                # 检查是否已经在列表中（避免重复）
+                if not any(s == side and d == db_id for s, d in orders_to_update):
+                    orders_to_update.append((side, db_id))
+        
+        # 更新每个订单的最终趋势
+        for side, db_id in orders_to_update:
+            trend_summary = self._get_rebound_trend_summary(side)
+            if trend_summary:
+                success = self.db.update_rebound_trend_only(db_id, trend_summary)
+                if success:
+                    self.log(
+                        f"[TREND] Saved final trend for order {db_id} ({side.upper()}): {trend_summary}",
+                        "info"
+                    )
+                else:
+                    self.log(
+                        f"[TREND] Failed to save final trend for order {db_id}",
+                        "warning"
+                    )
+            else:
+                self.log(
+                    f"[TREND] No trend data to save for order {db_id} ({side.upper()})",
+                    "debug"
+                )
     
     def _check_btc_condition(self) -> bool:
         """
@@ -1043,6 +1117,15 @@ class ReboundStrategy:
             except RuntimeError:
                 asyncio.ensure_future(self._execute_close_live(side, exit_price, pos_info, db_id, reason=reason))
 
+        # 任务56补充：将关闭的订单信息保存到 _closed_positions_for_trend
+        # 这样可以继续记录趋势直到15分钟结束
+        if db_id and entry_price > 0:
+            self._closed_positions_for_trend[side] = {
+                "db_id": db_id,
+                "entry_price": entry_price
+            }
+            self.log(f"[TREND] Will continue tracking {side.upper()} trend until period end", "debug")
+
         # cleanup local state
         if side in self._position_peak_price:
             del self._position_peak_price[side]
@@ -1111,6 +1194,10 @@ class ReboundStrategy:
             if price > 0:
                 last_prices[side] = price
         
+        # 任务56补充：在周期结束时，更新所有订单的最终反弹趋势
+        # 这包括活跃持仓和已提前关闭的持仓
+        self._save_final_rebound_trends()
+        
         # 使用旧市场的最后价格关闭现有持仓
         self._close_all_positions(use_prices=last_prices if last_prices else None)
         
@@ -1120,6 +1207,9 @@ class ReboundStrategy:
         # 重置反弹趋势记录 (任务56)
         self._rebound_trend_records = {"up": [], "down": []}
         self._last_trend_record_time = 0
+        
+        # 重置已关闭订单的趋势跟踪 (任务56补充)
+        self._closed_positions_for_trend.clear()
         
         # 重置BTC开始价格
         self.btc_price_start = self.btc_price_current

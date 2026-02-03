@@ -969,3 +969,433 @@ python apps/run_rebound.py --coin BTC --strategy-type 3 --live --size 3
 - 修改：`src/database.py` - 添加 `update_rebound_trend_only()` 方法
 - 新增：`scripts/test_task56_supplement.py` - 测试脚本
 
+57. ✅ 重构核心代码rebound.py，使用策略模式和工厂模式
+
+**设计模式实现**：
+
+1. **策略模式 (Strategy Pattern)**：
+   - 创建 `BaseReboundStrategy` 抽象基类
+   - 定义抽象方法：`should_enter_trade()`, `should_exit_trade()`
+   - 各策略继承基类，实现自己的入场/出场逻辑
+
+2. **工厂模式 (Factory Pattern)**：
+   - 创建 `StrategyFactory` 类
+   - `create(strategy_type, bot, config)` 根据类型创建策略实例
+   - 支持动态注册新策略
+
+3. **模板方法模式 (Template Method)**：
+   - 基类定义通用流程（连接、监控、记录趋势等）
+   - 子类只需实现策略特定逻辑
+
+**新增文件**：
+- `strategies/base_rebound.py` - 策略基类、风险管理器、配置类
+- `strategies/strategy_impl.py` - 具体策略实现（Strategy1/2/3）
+
+**策略类结构**：
+```
+BaseReboundStrategy (抽象基类)
+├── Strategy1 - A段反弹 (UP/DOWN<30%, BTC<$50)
+├── Strategy2 - C段反弹 (UP/DOWN<15%, BTC<$30)
+└── Strategy3 - 动态止盈止损 (支持数据库参数)
+```
+
+**使用示例**：
+```python
+from strategies.strategy_impl import StrategyFactory, BaseReboundConfig
+
+config = BaseReboundConfig(coin="BTC", simulation_mode=True)
+strategy = StrategyFactory.create("3", bot, config)
+await strategy.run()
+```
+
+58. ✅ 设计止损逻辑（连续失败3次停1小时，日PnL达50%停止）
+
+**风险管理器 (RiskManager)**：
+
+1. **连续亏损控制**：
+   - 追踪连续亏损次数 (`_consecutive_losses`)
+   - 达到3次后进入冷却期 (`_cooldown_until`)
+   - 冷却时间默认1小时（3600秒）
+   - 盈利后重置计数
+
+2. **日内止损控制**：
+   - 追踪当日累计PnL (`_today_pnl`)
+   - 每日自动重置（新日期时）
+   - 亏损达到初始资金50%时停止交易
+   - 设置 `_daily_stopped = True`
+
+3. **配置类 (RiskConfig)**：
+   ```python
+   @dataclass
+   class RiskConfig:
+       max_consecutive_losses: int = 3     # 连续失败次数
+       cooldown_duration: int = 3600       # 冷却时间（秒）
+       daily_loss_limit_percent: float = 0.50  # 日内最大亏损比例
+       initial_balance: float = 100.0      # 初始资金
+   ```
+
+4. **API方法**：
+   - `record_trade_result(pnl)` - 记录交易结果
+   - `check_can_trade()` - 检查是否可以交易
+   - `get_status()` - 获取风险状态
+   - `set_initial_balance(balance)` - 设置初始余额
+
+**测试结果**：
+- ✅ 连续3次亏损后进入冷却期
+- ✅ 日内亏损超过50%停止交易
+- ✅ 盈利后重置连续亏损计数
+- ✅ 每日自动重置
+
+59. ✅ 所有策略都记录rebound_trend（任务56补充扩展）
+
+**实现方式**：
+- 将趋势记录功能放入 `BaseReboundStrategy` 基类
+- 所有策略（1/2/3）都继承基类，自动获得趋势记录功能
+
+**基类中的趋势记录方法**：
+- `_record_rebound_trend()` - 每15秒记录反弹百分比
+- `_get_rebound_trend_summary()` - 获取趋势摘要字符串
+- `_save_final_rebound_trends()` - 周期结束时保存到数据库
+
+**效果**：
+- Strategy1: 记录趋势 ✅
+- Strategy2: 记录趋势 ✅
+- Strategy3: 记录趋势 ✅
+
+60. ✅ 策略3动态参数更新（数据库+API）
+
+**数据库表 (strategy3_rules)**：
+```sql
+CREATE TABLE strategy3_rules (
+    id SERIAL PRIMARY KEY,
+    create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_update_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'inactive',  -- active/inactive
+    env VARCHAR(20) DEFAULT 'simulate',      -- production/simulate
+    stage_buy VARCHAR(5) DEFAULT 'A',        -- 买入阶段
+    price_down_percentage DECIMAL(5,4) DEFAULT 0.25,  -- 价格下跌百分比
+    price_down DECIMAL(10,2) DEFAULT 50.0,            -- BTC价格下跌阈值
+    take_profit DECIMAL(5,4) DEFAULT 0.80,            -- 止盈比例
+    stop_loss DECIMAL(5,4) DEFAULT 0.20               -- 止损比例
+);
+```
+
+**数据库方法** (`src/database.py`):
+- `ensure_strategy3_rules_table()` - 创建表
+- `create_strategy3_rule()` - 创建规则
+- `activate_strategy3_rule(rule_id)` - 激活规则
+- `get_active_strategy3_rule(env)` - 获取激活的规则
+- `query_strategy3_rules()` - 查询规则
+
+**API接口** (`scripts/strategy_api.py`):
+```python
+# 函数调用方式
+from scripts.strategy_api import activate_rule, query_rules, create_rule, get_active_rule
+
+# 激活规则
+activate_rule(rule_id=1)
+
+# 查询规则
+query_rules(env="simulate", create_date="2026-02-01")
+
+# 创建规则
+create_rule(env="production", stage_buy="A", take_profit=0.80, stop_loss=0.20)
+
+# 获取激活规则
+get_active_rule(env="simulate")
+```
+
+**Flask API** (可选):
+```bash
+# 启动API服务器
+python scripts/strategy_api.py server --port 5000
+
+# API端点
+POST /rules/active       - 激活规则
+GET  /rules/query        - 查询规则
+POST /rules/create       - 创建规则
+GET  /rules/active/<env> - 获取激活规则
+```
+
+**CLI命令**:
+```bash
+# 创建规则
+python scripts/strategy_api.py create --env simulate --take-profit 0.80 --stop-loss 0.20
+
+# 激活规则
+python scripts/strategy_api.py activate 1
+
+# 查询规则
+python scripts/strategy_api.py query --env simulate
+
+# 获取激活规则
+python scripts/strategy_api.py active --env simulate
+```
+
+**Strategy3动态参数加载**：
+- `load_dynamic_params()` - 从数据库加载参数
+- `check_and_reload_params()` - 定期检查并重新加载
+- `_get_param(name, default)` - 获取动态参数或默认值
+
+**测试验证**：
+- 创建 `scripts/test_task57_60.py` 测试脚本
+- 测试结果：✅ 所有测试通过
+  - 策略模式和工厂模式正确实现
+  - 风险管理器功能正常
+  - 所有策略都能记录趋势
+  - 数据库表和API接口正常工作
+
+**新增/修改文件**：
+- 新增：`strategies/base_rebound.py` - 策略基类和风险管理器
+- 新增：`strategies/strategy_impl.py` - 策略实现和工厂
+- 新增：`scripts/strategy_api.py` - 策略规则API
+- 新增：`scripts/test_task57_60.py` - 测试脚本
+- 修改：`src/database.py` - 添加strategy3_rules表支持
+
+61. ✅ 策略3支持动态配置买入阶段（A/B/C任意组合）
+
+**需求背景**：
+- 策略3之前硬编码只在A段买入
+- `strategy3_rules.stage_buy` 字段已存在但未使用
+- 需要支持从数据库动态配置买入阶段
+
+**实现方案**：
+
+1. **添加 `_get_allowed_order_segments()` 方法** (`strategies/strategy_impl.py`)：
+   - 解析数据库中的 `stage_buy` 字段
+   - 支持单个阶段：`"A"`, `"B"`, `"C"`
+   - 支持多个阶段：`"A,B"`, `"B,C"`, `"A,B,C"`
+   - 支持大小写转换和空格处理
+   - 返回允许下单的阶段列表
+
+2. **修改 `should_enter_trade()` 方法**：
+   - 使用 `_get_allowed_order_segments()` 获取允许的阶段
+   - 检查当前阶段是否在允许列表中
+   - 在触发信息中包含 `stage_buy` 配置
+
+3. **增强 `load_dynamic_params()` 方法**：
+   - 从数据库加载 `stage_buy` 参数
+   - 自动更新 `config.order_segments`
+   - 日志记录加载的配置信息
+
+4. **更新 `_get_param()` 方法**：
+   - 支持返回任意类型（不仅限于 float）
+   - 正确处理字符串和列表类型参数
+
+**配置示例** (数据库 `strategy3_rules` 表):
+```sql
+-- 只在A段买入
+INSERT INTO strategy3_rules (env, stage_buy, ...) VALUES ('simulate', 'A', ...);
+
+-- 只在B段买入
+INSERT INTO strategy3_rules (env, stage_buy, ...) VALUES ('simulate', 'B', ...);
+
+-- 只在C段买入
+INSERT INTO strategy3_rules (env, stage_buy, ...) VALUES ('simulate', 'C', ...);
+
+-- 在A或B段买入
+INSERT INTO strategy3_rules (env, stage_buy, ...) VALUES ('simulate', 'A,B', ...);
+
+-- 在任意阶段买入
+INSERT INTO strategy3_rules (env, stage_buy, ...) VALUES ('simulate', 'A,B,C', ...);
+```
+
+**使用方法**：
+```bash
+# 通过API创建规则（B段买入）
+python scripts/strategy_api.py create --env simulate --stage-buy B --take-profit 0.60 --stop-loss 0.25
+
+# 激活规则
+python scripts/strategy_api.py activate <rule_id>
+
+# 运行策略3（会自动从数据库加载stage_buy配置）
+python apps/run_rebound.py --coin BTC --strategy-type 3
+```
+
+**测试验证**：
+- 创建 `scripts/test_task61.py` 测试脚本
+- 测试结果：✅ 所有测试通过
+  - ✅ stage_buy解析: 9个测试用例全部通过
+    - 单个阶段 (A/B/C)
+    - 多个阶段 (A,B / B,C / A,B,C)
+    - 边界情况（空字符串、小写、带空格）
+  - ✅ 数据库stage_buy: 创建、激活、读取规则正确
+    - 成功创建4个测试规则
+    - 成功激活和读取规则
+    - stage_buy字段正确存储和读取
+  - ✅ 阶段入场检查: 15个测试用例全部通过
+    - 正确检查各阶段入场权限
+    - 单阶段配置正确工作
+    - 多阶段配置正确工作
+
+**效果**：
+- Strategy3 现在支持灵活配置买入阶段
+- 可以针对不同市场环境选择最佳买入时机：
+  - A段（15-10分钟）：价格波动大，潜在收益高
+  - B段（10-5分钟）：中等波动
+  - C段（5-0分钟）：接近结束，快速反弹
+- 通过数据库动态调整，无需修改代码和重启
+
+**修改的文件**：
+- 修改：`strategies/strategy_impl.py` - 添加阶段配置支持
+  - 修改 `Strategy3.__init__()` - 初始化时加载动态参数
+  - 修改 `should_enter_trade()` - 支持动态阶段检查
+  - 新增 `_get_allowed_order_segments()` - 解析stage_buy
+  - 修改 `_get_param()` - 支持任意类型参数
+  - 修改 `load_dynamic_params()` - 加载并应用stage_buy配置
+- 新增：`scripts/test_task61.py` - 测试脚本
+
+**运行日志示例**：
+```
+[DYNAMIC] Loaded params: stage_buy=A,B, order_segments=['A', 'B'], 
+          threshold=0.25, btc_drop=50.0, take_profit=0.80, stop_loss=0.20
+```
+
+62. ✅ 启动策略时自动启动API服务器
+
+**需求背景**：
+- 策略运行时需要API服务器供其他系统调用
+- 目前需要手动启动API服务器（`python scripts/strategy_api.py server`）
+- 需要在运行策略时自动启动API服务器
+
+**实现方案**：
+
+1. **添加后台API服务器启动函数** (`apps/run_rebound.py`)：
+   ```python
+   def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
+       """在后台线程中启动API服务器"""
+       import threading
+       
+       def run_server():
+           from scripts.strategy_api import create_flask_app
+           app = create_flask_app()
+           if app:
+               app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+       
+       # 在守护线程中运行API服务器
+       api_thread = threading.Thread(target=run_server, daemon=True, name="APIServer")
+       api_thread.start()
+   ```
+
+2. **在策略启动时自动启动API** (`apps/run_rebound.py` main函数)：
+   - 在打印启动信息后立即启动API服务器
+   - 使用守护线程，不阻塞主进程
+   - 捕获异常，即使API启动失败也不影响策略运行
+   - 显示API端点信息
+
+3. **添加命令行参数**：
+   - `--api-port`: 指定API服务器端口（默认5000）
+   - 支持自定义端口避免冲突
+
+**使用方法**：
+
+```bash
+# 模拟模式（API服务器默认在5000端口）
+python apps/run_rebound.py --coin BTC --strategy-type 3
+
+# 真实模式（API服务器默认在5000端口）
+python apps/run_rebound.py --coin BTC --strategy-type 3 --live --size 3
+
+# 自定义API端口
+python apps/run_rebound.py --coin BTC --strategy-type 3 --api-port 5001
+```
+
+**启动日志示例**：
+```
+============================================================
+Rebound Strategy
+============================================================
+Mode: SIMULATION
+策略3: 动态止盈止损 (P&L mode)
+Coin: BTC
+Size: $10.00 USDC
+Drop Threshold: 0.30
+BTC Drop Max: $50.00
+Active Segments: A
+============================================================
+
+✓ API服务器已启动在后台 (http://0.0.0.0:5000)
+  - POST 0.0.0.0:5000/rules/active - 激活规则
+  - GET  0.0.0.0:5000/rules/query - 查询规则
+  - POST 0.0.0.0:5000/rules/create - 创建规则
+  - GET  0.0.0.0:5000/rules/active/<env> - 获取激活规则
+
+[21:34:24] Connecting to Polymarket...
+```
+
+**API端点**：
+
+策略运行后，可通过以下端点调用：
+
+1. **激活规则**：
+   ```bash
+   curl -X POST http://localhost:5000/rules/active \
+     -H "Content-Type: application/json" \
+     -d '{"rule_id": 1}'
+   ```
+
+2. **查询规则**：
+   ```bash
+   curl http://localhost:5000/rules/query?env=simulate
+   ```
+
+3. **创建规则**：
+   ```bash
+   curl -X POST http://localhost:5000/rules/create \
+     -H "Content-Type: application/json" \
+     -d '{
+       "env": "simulate",
+       "stage_buy": "A",
+       "price_down_percentage": 0.30,
+       "price_down": 50.0,
+       "take_profit": 0.80,
+       "stop_loss": 0.20
+     }'
+   ```
+
+4. **获取激活规则**：
+   ```bash
+   curl http://localhost:5000/rules/active/simulate
+   ```
+
+**特性**：
+- ✅ 守护线程模式：主进程退出时API服务器自动停止
+- ✅ 异常处理：API启动失败不影响策略运行
+- ✅ 端口可配置：通过`--api-port`参数自定义
+- ✅ 自动启动：无需手动运行API服务器
+- ✅ 同时支持模拟和真实模式
+
+**测试验证**：
+- 创建 `scripts/test_task62.py` 测试脚本
+- 测试结果：✅ 所有测试通过
+  - ✅ Flask依赖检查通过
+  - ✅ API集成检查通过
+  - ✅ 服务器后台启动成功
+  - ✅ API端点访问正常（3/3）
+    - GET /rules/active/<env> 正常
+    - GET /rules/query 正常
+    - POST /rules/create 正常
+
+**依赖要求**：
+```bash
+pip install flask
+```
+
+**注意事项**：
+1. API服务器使用开发模式，不建议生产环境暴露到公网
+2. 如需生产部署，建议使用Gunicorn或uWSGI
+3. 默认监听所有接口（0.0.0.0），可通过修改代码改为127.0.0.1仅本地访问
+4. 如果Flask未安装，策略仍可正常运行，只是API功能不可用
+
+**效果**：
+- 策略运行时自动提供API服务
+- 其他系统可以实时调用API管理策略规则
+- 无需额外启动API服务器进程
+- 简化部署和运维流程
+
+**修改的文件**：
+- 修改：`apps/run_rebound.py` - 添加API服务器自动启动
+  - 新增 `start_api_server_background()` 函数
+  - 在main()中调用启动API服务器
+  - 添加 `--api-port` 命令行参数
+- 新增：`scripts/test_task62.py` - 测试脚本

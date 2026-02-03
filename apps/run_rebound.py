@@ -52,6 +52,41 @@ from src.config import Config
 from strategies.rebound import ReboundStrategy, ReboundConfig
 
 
+def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
+    """
+    在后台线程中启动API服务器 (任务62)
+    
+    Args:
+        port: API服务器端口
+        host: API服务器主机地址
+    """
+    import threading
+    
+    def run_server():
+        try:
+            # 导入API模块
+            from scripts.strategy_api import create_flask_app
+            
+            # 创建Flask应用
+            app = create_flask_app()
+            if app:
+                # 禁用Flask的debug模式和reloader，避免冲突
+                app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        except Exception as e:
+            print(f"{Colors.YELLOW}API服务器启动失败: {e}{Colors.RESET}")
+            print(f"{Colors.YELLOW}提示: 如需API功能，请安装Flask: pip install flask{Colors.RESET}")
+    
+    # 在守护线程中运行API服务器
+    api_thread = threading.Thread(target=run_server, daemon=True, name="APIServer")
+    api_thread.start()
+    
+    print(f"{Colors.GREEN}✓ API服务器已启动在后台 (http://{host}:{port}){Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {host}:{port}/rules/active - 激活规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {host}:{port}/rules/query - 查询规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {host}:{port}/rules/create - 创建规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {host}:{port}/rules/active/<env> - 获取激活规则{Colors.RESET}\n")
+
+
 def load_strategy_type_from_config() -> str:
     """从config.yaml加载strategy.type配置"""
     config_path = Path(__file__).parent.parent / "config.yaml"
@@ -202,6 +237,12 @@ def main():
         action="store_true",
         help="Enable debug logging"
     )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=5000,
+        help="API server port (default: 5000)"
+    )
 
     args = parser.parse_args()
     
@@ -258,6 +299,15 @@ def main():
     print(f"BTC Drop Max: ${btc_drop_max:.2f}")
     print(f"Active Segments: {segments}")
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n")
+    
+    # 启动API服务器 (任务62)
+    # 在后台启动API服务器，使其他系统可以调用策略管理接口
+    try:
+        api_port = args.api_port if hasattr(args, 'api_port') else 5000
+        start_api_server_background(port=api_port)
+    except Exception as e:
+        print(f"{Colors.YELLOW}注意: API服务器启动失败 - {e}{Colors.RESET}")
+        print(f"{Colors.YELLOW}策略将继续运行，但API功能不可用{Colors.RESET}\n")
     
     if not simulation_mode:
         print(f"{Colors.RED}WARNING: LIVE TRADING MODE ENABLED!{Colors.RESET}")

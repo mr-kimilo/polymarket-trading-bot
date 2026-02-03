@@ -575,6 +575,247 @@ class Database:
             token_id=row.get('token_id'),
             order_id=row.get('order_id')
         )
+    
+    # ==================== Strategy3 Rules (任务60) ====================
+    
+    def ensure_strategy3_rules_table(self) -> None:
+        """确保strategy3_rules表存在 (任务60)"""
+        if not self._conn:
+            return
+        
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS strategy3_rules (
+            id SERIAL PRIMARY KEY,
+            create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_update_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status VARCHAR(20) NOT NULL DEFAULT 'inactive',
+            env VARCHAR(20) NOT NULL DEFAULT 'simulate',
+            stage_buy VARCHAR(5) NOT NULL DEFAULT 'A',
+            price_down_percentage DECIMAL(5, 4) NOT NULL DEFAULT 0.25,
+            price_down DECIMAL(10, 2) NOT NULL DEFAULT 50.0,
+            take_profit DECIMAL(5, 4) NOT NULL DEFAULT 0.80,
+            stop_loss DECIMAL(5, 4) NOT NULL DEFAULT 0.20
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_strategy3_rules_status ON strategy3_rules(status);
+        CREATE INDEX IF NOT EXISTS idx_strategy3_rules_env ON strategy3_rules(env);
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(create_table_sql)
+            logger.info("strategy3_rules table ensured")
+        except Exception as e:
+            logger.error(f"Failed to create strategy3_rules table: {e}")
+    
+    def create_strategy3_rule(
+        self,
+        env: str = "simulate",
+        stage_buy: str = "A",
+        price_down_percentage: float = 0.25,
+        price_down: float = 50.0,
+        take_profit: float = 0.80,
+        stop_loss: float = 0.20
+    ) -> Optional[int]:
+        """
+        创建策略3规则 (任务60)
+        
+        Args:
+            env: 环境 ("production" 或 "simulate")
+            stage_buy: 买入阶段 ("A", "B", "C")
+            price_down_percentage: 价格下跌百分比阈值
+            price_down: BTC价格下跌阈值
+            take_profit: 止盈比例
+            stop_loss: 止损比例
+            
+        Returns:
+            规则ID
+        """
+        if not self._conn:
+            return None
+        
+        # 确保表存在
+        self.ensure_strategy3_rules_table()
+        
+        insert_sql = """
+        INSERT INTO strategy3_rules (
+            env, stage_buy, price_down_percentage, price_down, take_profit, stop_loss
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(insert_sql, (
+                    env, stage_buy, price_down_percentage, price_down, take_profit, stop_loss
+                ))
+                result = cur.fetchone()
+                rule_id = result[0] if result else None
+                logger.info(f"Created strategy3 rule: {rule_id}")
+                return rule_id
+        except Exception as e:
+            logger.error(f"Failed to create strategy3 rule: {e}")
+            return None
+    
+    def activate_strategy3_rule(self, rule_id: int) -> bool:
+        """
+        激活策略3规则 (任务60)
+        
+        会先将同环境的其他规则设为inactive
+        
+        Args:
+            rule_id: 规则ID
+            
+        Returns:
+            是否成功
+        """
+        if not self._conn:
+            return False
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # 获取要激活的规则的环境
+                cur.execute("SELECT env FROM strategy3_rules WHERE id = %s", (rule_id,))
+                result = cur.fetchone()
+                if not result:
+                    logger.warning(f"Rule {rule_id} not found")
+                    return False
+                
+                env = result['env']
+                
+                # 将同环境的其他规则设为inactive
+                cur.execute(
+                    "UPDATE strategy3_rules SET status = 'inactive', last_update_date = CURRENT_TIMESTAMP WHERE env = %s AND status = 'active'",
+                    (env,)
+                )
+                
+                # 激活指定规则
+                cur.execute(
+                    "UPDATE strategy3_rules SET status = 'active', last_update_date = CURRENT_TIMESTAMP WHERE id = %s",
+                    (rule_id,)
+                )
+                
+                logger.info(f"Activated strategy3 rule: {rule_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to activate strategy3 rule: {e}")
+            return False
+    
+    def get_active_strategy3_rule(self, env: str = "simulate") -> Optional[Dict]:
+        """
+        获取当前激活的策略3规则 (任务60)
+        
+        Args:
+            env: 环境 ("production" 或 "simulate")
+            
+        Returns:
+            规则参数字典，如果没有激活的规则返回None
+        """
+        if not self._conn:
+            return None
+        
+        # 确保表存在
+        self.ensure_strategy3_rules_table()
+        
+        select_sql = """
+        SELECT id, stage_buy, price_down_percentage, price_down, take_profit, stop_loss,
+               create_date, last_update_date
+        FROM strategy3_rules
+        WHERE status = 'active' AND env = %s
+        ORDER BY last_update_date DESC
+        LIMIT 1;
+        """
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql, (env,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row['id'],
+                        "stage_buy": row['stage_buy'],
+                        "price_down_percentage": float(row['price_down_percentage']),
+                        "price_down": float(row['price_down']),
+                        "take_profit": float(row['take_profit']),
+                        "stop_loss": float(row['stop_loss']),
+                        "create_date": row['create_date'],
+                        "last_update_date": row['last_update_date']
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"Failed to get active strategy3 rule: {e}")
+            return None
+    
+    def query_strategy3_rules(
+        self,
+        rule_ids: Optional[List[int]] = None,
+        create_date_from: Optional[datetime] = None,
+        env: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        查询策略3规则 (任务60)
+        
+        Args:
+            rule_ids: 规则ID列表（可选）
+            create_date_from: 创建日期起始（可选）
+            env: 环境筛选（可选）
+            
+        Returns:
+            规则列表
+        """
+        if not self._conn:
+            return []
+        
+        # 确保表存在
+        self.ensure_strategy3_rules_table()
+        
+        conditions = []
+        params = []
+        
+        if rule_ids:
+            conditions.append("id = ANY(%s)")
+            params.append(rule_ids)
+        
+        if create_date_from:
+            conditions.append("create_date >= %s")
+            params.append(create_date_from)
+        
+        if env:
+            conditions.append("env = %s")
+            params.append(env)
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        
+        select_sql = f"""
+        SELECT id, status, env, stage_buy, price_down_percentage, price_down, 
+               take_profit, stop_loss, create_date, last_update_date
+        FROM strategy3_rules
+        WHERE {where_clause}
+        ORDER BY create_date DESC;
+        """
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql, params)
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": row['id'],
+                        "status": row['status'],
+                        "env": row['env'],
+                        "stage_buy": row['stage_buy'],
+                        "price_down_percentage": float(row['price_down_percentage']),
+                        "price_down": float(row['price_down']),
+                        "take_profit": float(row['take_profit']),
+                        "stop_loss": float(row['stop_loss']),
+                        "create_date": row['create_date'].isoformat() if row['create_date'] else None,
+                        "last_update_date": row['last_update_date'].isoformat() if row['last_update_date'] else None
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.error(f"Failed to query strategy3 rules: {e}")
+            return []
 
 
 # 全局数据库实例（懒加载）

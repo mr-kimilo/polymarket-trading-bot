@@ -1399,3 +1399,22 @@ pip install flask
   - 在main()中调用启动API服务器
   - 添加 `--api-port` 命令行参数
 - 新增：`scripts/test_task62.py` - 测试脚本
+
+63.检查现在策略1的情况下，为什么没有记录rebound_orders.rebound_trend
+64.增加新功能，在插入rebound_orders时，记录是哪个策略，以及是sim还是live，增加2个字段，stratagy_type(1,2,3), env(prod/sim)
+65.增加新功能，增加一个配置属性，order_schedule,为true时，根据 stratagy_schedule表决定是否下单。
+order_schedule
+id --主键
+create_dt --创建时间
+env --prod/sim
+stratagy_type --1,2,3
+schedule_date --running date
+time_period -- 01:00-02:00 or elese time period
+status --0 plan/1 running/2 run finished/ 3 canceled
+
+生成建表语句，我来创建，插入数据之后，后面根据是否插入有数据来决定这个时间段是否下单。
+生成api，用于创建和取消schedule
+orderSchedule/create
+orderSchedule/cancel
+
+

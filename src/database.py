@@ -34,7 +34,7 @@ Example:
 import os
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date, time
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
@@ -114,6 +114,10 @@ class ReboundOrder:
     market_slug: Optional[str] = None
     token_id: Optional[str] = None
     order_id: Optional[str] = None  # Polymarket订单ID
+    
+    # Task 64: 策略类型和环境
+    strategy_type: Optional[str] = None  # "1", "2", "3"
+    env: Optional[str] = None  # "prod", "sim"
 
 
 class DatabaseError(Exception):
@@ -248,7 +252,11 @@ class Database:
             -- 市场信息
             market_slug VARCHAR(255),
             token_id VARCHAR(255),
-            order_id VARCHAR(255)
+            order_id VARCHAR(255),
+            
+            -- Task 64: 策略类型和环境
+            strategy_type VARCHAR(5),
+            env VARCHAR(10)
         );
         
         -- 创建索引
@@ -256,12 +264,20 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_status ON rebound_orders(status);
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_created_at ON rebound_orders(created_at);
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_is_simulated ON rebound_orders(is_simulated);
+        CREATE INDEX IF NOT EXISTS idx_rebound_orders_strategy_type ON rebound_orders(strategy_type);
+        CREATE INDEX IF NOT EXISTS idx_rebound_orders_env ON rebound_orders(env);
         """
         
         try:
             with self._conn.cursor() as cur:
                 cur.execute(create_table_sql)
             logger.info("Database tables ensured")
+            
+            # 添加缺失的列（用于现有表的迁移）
+            self.add_missing_columns()
+            
+            # 确保order_schedule表存在 (任务65)
+            self.ensure_order_schedule_table()
         except Exception as e:
             logger.error(f"Failed to create tables: {e}")
     
@@ -298,14 +314,16 @@ class Database:
             trigger_up_price, trigger_down_price, trigger_up_drop, trigger_down_drop, btc_drop,
             period_start, period_end,
             status, is_simulated,
-            market_slug, token_id, order_id
+            market_slug, token_id, order_id,
+            strategy_type, env
         ) VALUES (
             %s, %s, %s,
             %s, %s, %s,
             %s, %s, %s, %s, %s,
             %s, %s,
             %s, %s,
-            %s, %s, %s
+            %s, %s, %s,
+            %s, %s
         ) RETURNING id;
         """
         
@@ -318,11 +336,12 @@ class Database:
                     order.trigger_up_drop, order.trigger_down_drop, order.btc_drop,
                     order.period_start, order.period_end,
                     order.status, order.is_simulated,
-                    order.market_slug, order.token_id, order.order_id
+                    order.market_slug, order.token_id, order.order_id,
+                    order.strategy_type, order.env
                 ))
                 result = cur.fetchone()
                 order_id = result[0] if result else None
-                logger.info(f"Created rebound order: {order_id} (simulated={order.is_simulated})")
+                logger.info(f"Created rebound order: {order_id} (simulated={order.is_simulated}, strategy={order.strategy_type}, env={order.env})")
                 return order_id
         except Exception as e:
             logger.error(f"Failed to create rebound order: {e}")
@@ -573,7 +592,9 @@ class Database:
             is_simulated=row.get('is_simulated', True),
             market_slug=row.get('market_slug'),
             token_id=row.get('token_id'),
-            order_id=row.get('order_id')
+            order_id=row.get('order_id'),
+            strategy_type=row.get('strategy_type'),
+            env=row.get('env')
         )
     
     # ==================== Strategy3 Rules (任务60) ====================
@@ -816,6 +837,365 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to query strategy3 rules: {e}")
             return []
+
+    # ==================== Order Schedule (任务65) ====================
+
+    def ensure_order_schedule_table(self) -> None:
+        """确保order_schedule表存在 (任务65 + 任务65补充)"""
+        if not self._conn:
+            return
+        
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS order_schedule (
+            id SERIAL PRIMARY KEY,
+            create_dt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            env VARCHAR(10) NOT NULL,
+            strategy_type VARCHAR(5) NOT NULL,
+            schedule_date DATE NOT NULL,
+            start_time TIME NOT NULL,
+            end_time TIME NOT NULL,
+            status INTEGER NOT NULL DEFAULT 0
+        );
+        
+        CREATE INDEX IF NOT EXISTS idx_order_schedule_env ON order_schedule(env);
+        CREATE INDEX IF NOT EXISTS idx_order_schedule_strategy_type ON order_schedule(strategy_type);
+        CREATE INDEX IF NOT EXISTS idx_order_schedule_date ON order_schedule(schedule_date);
+        CREATE INDEX IF NOT EXISTS idx_order_schedule_status ON order_schedule(status);
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(create_table_sql)
+            logger.info("order_schedule table ensured")
+        except Exception as e:
+            logger.error(f"Failed to create order_schedule table: {e}")
+    
+    def migrate_order_schedule_table(self) -> None:
+        """迁移order_schedule表，将time_period拆分为start_time和end_time (任务65补充)"""
+        if not self._conn:
+            return
+        
+        try:
+            with self._conn.cursor() as cur:
+                # 检查是否存在旧的time_period列
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'order_schedule' AND column_name = 'time_period';
+                """)
+                has_time_period = cur.fetchone() is not None
+                
+                if has_time_period:
+                    logger.info("Migrating order_schedule table: splitting time_period into start_time and end_time")
+                    
+                    # 添加新列
+                    cur.execute("ALTER TABLE order_schedule ADD COLUMN IF NOT EXISTS start_time TIME;")
+                    cur.execute("ALTER TABLE order_schedule ADD COLUMN IF NOT EXISTS end_time TIME;")
+                    
+                    # 迁移数据：将time_period (如 "09:00-10:00") 拆分为start_time和end_time
+                    cur.execute("""
+                        UPDATE order_schedule
+                        SET start_time = split_part(time_period, '-', 1)::TIME,
+                            end_time = split_part(time_period, '-', 2)::TIME
+                        WHERE start_time IS NULL AND end_time IS NULL AND time_period IS NOT NULL;
+                    """)
+                    
+                    # 删除旧列
+                    cur.execute("ALTER TABLE order_schedule DROP COLUMN IF EXISTS time_period;")
+                    
+                    # 设置新列为NOT NULL（如果数据已迁移）
+                    cur.execute("ALTER TABLE order_schedule ALTER COLUMN start_time SET NOT NULL;")
+                    cur.execute("ALTER TABLE order_schedule ALTER COLUMN end_time SET NOT NULL;")
+                    
+                    logger.info("order_schedule table migration completed")
+        except Exception as e:
+            logger.error(f"Failed to migrate order_schedule table: {e}")
+
+    def create_order_schedule(
+        self,
+        env: str,
+        strategy_type: str,
+        schedule_date: date,
+        start_time: time,
+        end_time: time,
+        status: int = 0
+    ) -> Optional[int]:
+        """
+        创建订单计划 (任务65 + 任务65补充)
+        
+        Args:
+            env: 环境 ("prod" 或 "sim")
+            strategy_type: 策略类型 ("1", "2", "3")
+            schedule_date: 计划日期
+            start_time: 开始时间
+            end_time: 结束时间
+            status: 状态 (0=plan, 1=running, 2=completed, 3=canceled)
+            
+        Returns:
+            计划ID
+        """
+        if not self._conn:
+            return None
+        
+        # 确保表存在并执行迁移
+        self.ensure_order_schedule_table()
+        self.migrate_order_schedule_table()
+        
+        insert_sql = """
+        INSERT INTO order_schedule (env, strategy_type, schedule_date, start_time, end_time, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id;
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(insert_sql, (env, strategy_type, schedule_date, start_time, end_time, status))
+                result = cur.fetchone()
+                schedule_id = result[0] if result else None
+                logger.info(f"Created order schedule: {schedule_id} ({start_time}-{end_time})")
+                return schedule_id
+        except Exception as e:
+            logger.error(f"Failed to create order schedule: {e}")
+            return None
+
+    def get_order_schedule(self, schedule_id: int) -> Optional[Dict]:
+        """
+        获取订单计划详情 (任务65)
+        
+        Args:
+            schedule_id: 计划ID
+            
+        Returns:
+            计划详情字典
+        """
+        if not self._conn:
+            return None
+        
+        select_sql = """
+        SELECT id, create_dt, env, strategy_type, schedule_date, start_time, end_time, status
+        FROM order_schedule
+        WHERE id = %s;
+        """
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql, (schedule_id,))
+                row = cur.fetchone()
+                if row:
+                    return {
+                        "id": row['id'],
+                        "create_dt": row['create_dt'].isoformat() if row['create_dt'] else None,
+                        "env": row['env'],
+                        "strategy_type": row['strategy_type'],
+                        "schedule_date": row['schedule_date'].isoformat() if row['schedule_date'] else None,
+                        "start_time": str(row['start_time']) if row['start_time'] else None,
+                        "end_time": str(row['end_time']) if row['end_time'] else None,
+                        "status": row['status']
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"Failed to get order schedule: {e}")
+            return None
+
+    def cancel_order_schedule(self, schedule_id: int) -> bool:
+        """
+        取消订单计划 (任务65)
+        
+        Args:
+            schedule_id: 计划ID
+            
+        Returns:
+            是否成功
+        """
+        if not self._conn:
+            return False
+        
+        update_sql = """
+        UPDATE order_schedule
+        SET status = 3
+        WHERE id = %s AND status = 0;
+        """
+        
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(update_sql, (schedule_id,))
+                # Check if any row was actually updated
+                if cur.rowcount > 0:
+                    logger.info(f"Canceled order schedule: {schedule_id}")
+                    return True
+                else:
+                    logger.warning(f"Order schedule {schedule_id} not found or already processed")
+                    return False
+        except Exception as e:
+            logger.error(f"Failed to cancel order schedule: {e}")
+            return False
+
+    def check_should_trade(self, env: str, strategy_type: str) -> bool:
+        """
+        检查当前时间是否应该交易 (任务65 + 任务65补充)
+        
+        根据order_schedule表检查当前时间是否在计划的交易时间段内
+        
+        Args:
+            env: 环境 ("prod" 或 "sim")
+            strategy_type: 策略类型 ("1", "2", "3")
+            
+        Returns:
+            是否应该交易
+        """
+        if not self._conn:
+            return False
+        
+        # 确保表存在并执行迁移
+        self.ensure_order_schedule_table()
+        self.migrate_order_schedule_table()
+        
+        # 查询今天状态为plan(0)的计划
+        select_sql = """
+        SELECT start_time, end_time
+        FROM order_schedule
+        WHERE env = %s 
+          AND strategy_type = %s 
+          AND schedule_date = CURRENT_DATE
+          AND status = 0;
+        """
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql, (env, strategy_type))
+                rows = cur.fetchall()
+                
+                if not rows:
+                    return False
+                
+                # 获取当前时间
+                now = datetime.now()
+                current_time = now.time()
+                
+                # 检查是否在任何计划的时间段内
+                for row in rows:
+                    start_time = row['start_time']
+                    end_time = row['end_time']
+                    
+                    # 比较时间对象
+                    if start_time <= current_time <= end_time:
+                        return True
+                
+                return False
+        except Exception as e:
+            logger.error(f"Failed to check should trade: {e}")
+            return False
+
+    def query_order_schedules(
+        self,
+        env: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        schedule_date: Optional[date] = None,
+        status: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        查询订单计划 (任务65)
+        
+        Args:
+            env: 环境筛选
+            strategy_type: 策略类型筛选
+            schedule_date: 日期筛选
+            status: 状态筛选
+            
+        Returns:
+            计划列表
+        """
+        if not self._conn:
+            return []
+        
+        # 确保表存在
+        self.ensure_order_schedule_table()
+        
+        conditions = []
+        params = []
+        
+        if env:
+            conditions.append("env = %s")
+            params.append(env)
+        
+        if strategy_type:
+            conditions.append("strategy_type = %s")
+            params.append(strategy_type)
+        
+        if schedule_date:
+            conditions.append("schedule_date = %s")
+            params.append(schedule_date)
+        
+        if status is not None:
+            conditions.append("status = %s")
+            params.append(status)
+        
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        
+        # 确保迁移已完成
+        self.migrate_order_schedule_table()
+        
+        select_sql = f"""
+        SELECT id, create_dt, env, strategy_type, schedule_date, start_time, end_time, status
+        FROM order_schedule
+        WHERE {where_clause}
+        ORDER BY schedule_date DESC, create_dt DESC;
+        """
+        
+        try:
+            with self._conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(select_sql, params)
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": row['id'],
+                        "create_dt": row['create_dt'].isoformat() if row['create_dt'] else None,
+                        "env": row['env'],
+                        "strategy_type": row['strategy_type'],
+                        "schedule_date": row['schedule_date'].isoformat() if row['schedule_date'] else None,
+                        "start_time": row['start_time'].strftime("%H:%M:%S") if row['start_time'] else None,
+                        "end_time": row['end_time'].strftime("%H:%M:%S") if row['end_time'] else None,
+                        "status": row['status']
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.error(f"Failed to query order schedules: {e}")
+            return []
+
+    def add_missing_columns(self) -> None:
+        """
+        添加缺失的列到现有表 (任务64迁移)
+        
+        用于将新字段添加到已存在的表中
+        """
+        if not self._conn:
+            return
+        
+        alter_statements = [
+            "ALTER TABLE rebound_orders ADD COLUMN IF NOT EXISTS strategy_type VARCHAR(5);",
+            "ALTER TABLE rebound_orders ADD COLUMN IF NOT EXISTS env VARCHAR(10);",
+        ]
+        
+        try:
+            with self._conn.cursor() as cur:
+                for stmt in alter_statements:
+                    try:
+                        cur.execute(stmt)
+                    except Exception as e:
+                        # Column might already exist, ignore error
+                        logger.debug(f"Column might exist: {e}")
+                
+                # Create indexes if not exist
+                try:
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_rebound_orders_strategy_type ON rebound_orders(strategy_type);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_rebound_orders_env ON rebound_orders(env);")
+                except Exception as e:
+                    logger.debug(f"Index might exist: {e}")
+            
+            logger.info("Added missing columns to rebound_orders table")
+        except Exception as e:
+            logger.error(f"Failed to add missing columns: {e}")
 
 
 # 全局数据库实例（懒加载）

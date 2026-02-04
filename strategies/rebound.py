@@ -137,6 +137,10 @@ class ReboundConfig:
     # Useful for manual intervention or emergency exits
     direct_sell_enabled: bool = False
 
+    # 任务65: 订单计划功能开关
+    # 当启用时，只有在order_schedule表中有对应计划的时间段内才会执行交易
+    order_schedule_enabled: bool = False
+
 
 @dataclass 
 class PriceRecord:
@@ -225,7 +229,7 @@ class ReboundStrategy:
         
         # 4. Fallback to local orderbook if available
         if not sell_price or sell_price <= 0 or sell_price >= 1:
-            self.log(f"[DEBUG] Trying local orderbook fallback...", "info")
+            self.log("[DEBUG] Trying local orderbook fallback...", "info")
             if hasattr(self, 'market') and self.market:
                 orderbook = self.market.get_orderbook(side)
                 self.log(f"[DEBUG] local orderbook: {orderbook.best_bid if orderbook else 'None'}", "info")
@@ -732,6 +736,9 @@ class ReboundStrategy:
         # 计算交易数量
         size = self.config.size / current_price
         
+        # 任务64: 确定env值
+        env = "sim" if self.config.simulation_mode else "prod"
+        
         # 创建订单记录
         order = ReboundOrder(
             coin=self.config.coin,
@@ -749,7 +756,9 @@ class ReboundStrategy:
             status=OrderStatus.OPEN.value if not self.config.simulation_mode else OrderStatus.SIMULATED.value,
             is_simulated=self.config.simulation_mode,
             market_slug=self.current_market.slug if self.current_market else None,
-            token_id=token_id
+            token_id=token_id,
+            strategy_type=self.config.strategy_type,  # 任务64
+            env=env  # 任务64
         )
         
         # 如果是真实模式，执行下单
@@ -1238,6 +1247,16 @@ class ReboundStrategy:
         if self._current_period_orders:
             # already placed an order this period
             return
+        
+        # 任务65: 检查订单计划
+        if self.config.order_schedule_enabled:
+            env = "sim" if self.config.simulation_mode else "prod"
+            should_trade = self.db.check_should_trade(
+                env=env,
+                strategy_type=self.config.strategy_type
+            )
+            if not should_trade:
+                return
         
         # 检查BTC条件
         if not self._check_btc_condition():

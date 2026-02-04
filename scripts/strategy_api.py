@@ -4,6 +4,9 @@ Strategy Rules API - 策略规则管理接口 (任务60)
 提供REST API供其他系统调用：
 - POST /rules/active - 激活规则
 - GET /rules/query - 查询规则
+- POST /orderSchedule/create - 创建订单计划 (任务65)
+- POST /orderSchedule/cancel - 取消订单计划 (任务65)
+- GET /orderSchedule/query - 查询订单计划 (任务65)
 
 使用方法：
     python -m scripts.strategy_api
@@ -186,7 +189,7 @@ def create_rule(
     if rule_id:
         return {
             "success": True,
-            "message": f"Rule created successfully",
+            "message": "Rule created successfully",
             "rule_id": rule_id
         }
     else:
@@ -233,6 +236,210 @@ def get_active_rule(env: str = "simulate") -> dict:
             "message": f"No active rule for env={env}",
             "rule": None
         }
+
+
+# ==================== Order Schedule API (任务65) ====================
+
+def create_order_schedule(
+    env: str,
+    strategy_type: str,
+    schedule_date: str,
+    start_time: str,
+    end_time: str
+) -> dict:
+    """
+    创建订单计划 (任务65, 补充任务)
+    
+    Args:
+        env: 环境 ("prod" 或 "sim")
+        strategy_type: 策略类型 ("1", "2", "3")
+        schedule_date: 计划日期 (YYYY-MM-DD格式)
+        start_time: 开始时间 (HH:MM格式)
+        end_time: 结束时间 (HH:MM格式)
+        
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "schedule_id": int or None
+        }
+    """
+    db = get_database()
+    if not db.is_connected:
+        return {
+            "success": False,
+            "message": "Database not connected",
+            "schedule_id": None
+        }
+    
+    # 解析日期
+    try:
+        parsed_date = datetime.strptime(schedule_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {
+            "success": False,
+            "message": f"Invalid date format: {schedule_date}. Use YYYY-MM-DD",
+            "schedule_id": None
+        }
+    
+    # 验证并解析时间
+    try:
+        start_time_obj = datetime.strptime(start_time, "%H:%M").time()
+        end_time_obj = datetime.strptime(end_time, "%H:%M").time()
+    except ValueError:
+        return {
+            "success": False,
+            "message": "Invalid time format. Use HH:MM (e.g., '09:00')",
+            "schedule_id": None
+        }
+    
+    schedule_id = db.create_order_schedule(
+        env=env,
+        strategy_type=strategy_type,
+        schedule_date=parsed_date,
+        start_time=start_time_obj,
+        end_time=end_time_obj,
+        status=0  # plan
+    )
+    
+    if schedule_id:
+        return {
+            "success": True,
+            "message": "Order schedule created successfully",
+            "schedule_id": schedule_id
+        }
+    else:
+        return {
+            "success": False,
+            "message": "Failed to create order schedule",
+            "schedule_id": None
+        }
+
+
+def cancel_order_schedule(schedule_id: int) -> dict:
+    """
+    取消订单计划 (任务65)
+    
+    Args:
+        schedule_id: 计划ID
+        
+    Returns:
+        {
+            "success": bool,
+            "message": str
+        }
+    """
+    db = get_database()
+    if not db.is_connected:
+        return {
+            "success": False,
+            "message": "Database not connected"
+        }
+    
+    success = db.cancel_order_schedule(schedule_id)
+    
+    if success:
+        return {
+            "success": True,
+            "message": f"Order schedule {schedule_id} canceled successfully"
+        }
+    else:
+        return {
+            "success": False,
+            "message": f"Failed to cancel order schedule {schedule_id}. It may not exist or already processed."
+        }
+
+
+def query_order_schedules(
+    env: Optional[str] = None,
+    strategy_type: Optional[str] = None,
+    schedule_date: Optional[str] = None,
+    status: Optional[int] = None
+) -> dict:
+    """
+    查询订单计划 (任务65)
+    
+    Args:
+        env: 环境筛选
+        strategy_type: 策略类型筛选
+        schedule_date: 日期筛选 (YYYY-MM-DD格式)
+        status: 状态筛选 (0=plan, 1=running, 2=completed, 3=canceled)
+        
+    Returns:
+        {
+            "success": bool,
+            "message": str,
+            "schedules": list,
+            "count": int
+        }
+    """
+    db = get_database()
+    if not db.is_connected:
+        return {
+            "success": False,
+            "message": "Database not connected",
+            "schedules": [],
+            "count": 0
+        }
+    
+    # 解析日期
+    parsed_date = None
+    if schedule_date:
+        try:
+            parsed_date = datetime.strptime(schedule_date, "%Y-%m-%d").date()
+        except ValueError:
+            return {
+                "success": False,
+                "message": f"Invalid date format: {schedule_date}. Use YYYY-MM-DD",
+                "schedules": [],
+                "count": 0
+            }
+    
+    schedules = db.query_order_schedules(
+        env=env,
+        strategy_type=strategy_type,
+        schedule_date=parsed_date,
+        status=status
+    )
+    
+    return {
+        "success": True,
+        "message": f"Found {len(schedules)} schedules",
+        "schedules": schedules,
+        "count": len(schedules)
+    }
+
+
+def check_should_trade(env: str, strategy_type: str) -> dict:
+    """
+    检查当前是否应该交易 (任务65)
+    
+    Args:
+        env: 环境 ("prod" 或 "sim")
+        strategy_type: 策略类型 ("1", "2", "3")
+        
+    Returns:
+        {
+            "success": bool,
+            "should_trade": bool,
+            "message": str
+        }
+    """
+    db = get_database()
+    if not db.is_connected:
+        return {
+            "success": False,
+            "should_trade": False,
+            "message": "Database not connected"
+        }
+    
+    should_trade = db.check_should_trade(env=env, strategy_type=strategy_type)
+    
+    return {
+        "success": True,
+        "should_trade": should_trade,
+        "message": "In scheduled trading time" if should_trade else "Not in scheduled trading time"
+    }
 
 
 # ==================== Flask API (可选) ====================
@@ -291,6 +498,65 @@ def create_flask_app():
         result = get_active_rule(env=env)
         return jsonify(result)
     
+    # ==================== Order Schedule API (任务65) ====================
+    
+    @app.route('/orderSchedule/create', methods=['POST'])
+    def api_create_order_schedule():
+        """创建订单计划 API (任务65, 补充任务)"""
+        data = request.get_json() or {}
+        
+        required_fields = ['env', 'strategy_type', 'schedule_date', 'start_time', 'end_time']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"success": False, "message": f"{field} is required"}), 400
+        
+        result = create_order_schedule(
+            env=data['env'],
+            strategy_type=data['strategy_type'],
+            schedule_date=data['schedule_date'],
+            start_time=data['start_time'],
+            end_time=data['end_time']
+        )
+        return jsonify(result)
+    
+    @app.route('/orderSchedule/cancel', methods=['POST'])
+    def api_cancel_order_schedule():
+        """取消订单计划 API (任务65)"""
+        data = request.get_json()
+        if not data or 'schedule_id' not in data:
+            return jsonify({"success": False, "message": "schedule_id is required"}), 400
+        
+        result = cancel_order_schedule(data['schedule_id'])
+        return jsonify(result)
+    
+    @app.route('/orderSchedule/query', methods=['GET'])
+    def api_query_order_schedules():
+        """查询订单计划 API (任务65)"""
+        env = request.args.get('env')
+        strategy_type = request.args.get('strategy_type')
+        schedule_date = request.args.get('schedule_date')
+        status = request.args.get('status', type=int)
+        
+        result = query_order_schedules(
+            env=env,
+            strategy_type=strategy_type,
+            schedule_date=schedule_date,
+            status=status
+        )
+        return jsonify(result)
+    
+    @app.route('/orderSchedule/check', methods=['GET'])
+    def api_check_should_trade():
+        """检查是否应该交易 API (任务65)"""
+        env = request.args.get('env')
+        strategy_type = request.args.get('strategy_type')
+        
+        if not env or not strategy_type:
+            return jsonify({"success": False, "message": "env and strategy_type are required"}), 400
+        
+        result = check_should_trade(env=env, strategy_type=strategy_type)
+        return jsonify(result)
+    
     return app
 
 
@@ -330,6 +596,27 @@ def main():
     server_parser = subparsers.add_parser('server', help='Start Flask API server')
     server_parser.add_argument('--host', default='0.0.0.0', help='Host')
     server_parser.add_argument('--port', type=int, default=5000, help='Port')
+    
+    # 任务65: 订单计划命令
+    schedule_create_parser = subparsers.add_parser('schedule-create', help='Create order schedule (任务65补充)')
+    schedule_create_parser.add_argument('--env', required=True, help='Environment (prod/sim)')
+    schedule_create_parser.add_argument('--strategy-type', required=True, help='Strategy type (1/2/3)')
+    schedule_create_parser.add_argument('--date', required=True, help='Schedule date (YYYY-MM-DD)')
+    schedule_create_parser.add_argument('--start-time', required=True, help='Start time (HH:MM)')
+    schedule_create_parser.add_argument('--end-time', required=True, help='End time (HH:MM)')
+    
+    schedule_cancel_parser = subparsers.add_parser('schedule-cancel', help='Cancel order schedule')
+    schedule_cancel_parser.add_argument('schedule_id', type=int, help='Schedule ID to cancel')
+    
+    schedule_query_parser = subparsers.add_parser('schedule-query', help='Query order schedules')
+    schedule_query_parser.add_argument('--env', help='Environment filter')
+    schedule_query_parser.add_argument('--strategy-type', help='Strategy type filter')
+    schedule_query_parser.add_argument('--date', help='Date filter (YYYY-MM-DD)')
+    schedule_query_parser.add_argument('--status', type=int, help='Status filter (0=plan, 1=running, 2=completed, 3=canceled)')
+    
+    schedule_check_parser = subparsers.add_parser('schedule-check', help='Check if should trade now')
+    schedule_check_parser.add_argument('--env', required=True, help='Environment (prod/sim)')
+    schedule_check_parser.add_argument('--strategy-type', required=True, help='Strategy type (1/2/3)')
     
     args = parser.parse_args()
     
@@ -378,6 +665,46 @@ def main():
         if app:
             print(f"Starting API server on {args.host}:{args.port}")
             app.run(host=args.host, port=args.port, debug=True)
+    
+    # 任务65: 订单计划命令处理
+    elif args.command == 'schedule-create':
+        result = create_order_schedule(
+            env=args.env,
+            strategy_type=args.strategy_type,
+            schedule_date=args.date,
+            start_time=args.start_time,
+            end_time=args.end_time
+        )
+        print(f"Success: {result['success']}")
+        print(f"Message: {result['message']}")
+        if result.get('schedule_id'):
+            print(f"Schedule ID: {result['schedule_id']}")
+    
+    elif args.command == 'schedule-cancel':
+        result = cancel_order_schedule(args.schedule_id)
+        print(f"Success: {result['success']}")
+        print(f"Message: {result['message']}")
+    
+    elif args.command == 'schedule-query':
+        result = query_order_schedules(
+            env=args.env,
+            strategy_type=args.strategy_type,
+            schedule_date=args.date,
+            status=args.status
+        )
+        print(f"Success: {result['success']}")
+        print(f"Count: {result['count']}")
+        for schedule in result['schedules']:
+            status_map = {0: 'plan', 1: 'running', 2: 'completed', 3: 'canceled'}
+            status_str = status_map.get(schedule['status'], str(schedule['status']))
+            print(f"  - ID={schedule['id']} env={schedule['env']} type={schedule['strategy_type']} "
+                  f"date={schedule['schedule_date']} start={schedule['start_time']} "
+                  f"end={schedule['end_time']} status={status_str}")
+    
+    elif args.command == 'schedule-check':
+        result = check_should_trade(env=args.env, strategy_type=args.strategy_type)
+        print(f"Should Trade: {result['should_trade']}")
+        print(f"Message: {result['message']}")
     
     else:
         parser.print_help()

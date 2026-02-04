@@ -1452,3 +1452,41 @@ pip install flask
     - `tests/unit/test_task63_65.py` - 测试用例（14个测试全部通过）
     - `tests/unit/test_task65_supplement.py` - 补充测试用例（8个测试全部通过）
 
+66. ✅ 生成 Order Schedule API 使用说明文档
+    **实现**：
+    - 创建完整的 API 使用文档：`docs/api/order-schedule-api.md`
+    - 包含以下内容：
+      - 服务启动方式和默认端口配置
+      - 4个API接口的详细说明：
+        - `POST /orderSchedule/create` - 创建调度（URL、入参、出参、示例）
+        - `POST /orderSchedule/cancel` - 取消调度（URL、入参、出参、示例）
+        - `GET /orderSchedule/query` - 查询调度（URL、入参、出参、示例）
+        - `GET /orderSchedule/check` - 检查是否应该交易（URL、入参、出参、示例）
+      - 请求/响应参数详细说明（类型、必填、说明、示例）
+      - HTTP状态码和业务状态码说明
+      - 完整使用示例（Python、JavaScript、cURL）
+      - 错误处理指南和常见问题解决方案
+      - 注意事项和测试建议
+    - 创建 API 集成测试脚本：`tests/integration/test_api_endpoints.py`
+      - 测试所有4个端点的正常流程
+      - 测试错误处理（缺少参数、格式错误等）
+      - 输出详细的测试结果和验证信息
+    **修改文件**：
+    - `docs/api/order-schedule-api.md` - API使用文档（新建）
+    - `tests/integration/test_api_endpoints.py` - API集成测试（新建）
+
+67. ✅ 服务启动时显示 Order Schedule API 访问URL
+    **需求**: 无论 live 或 sim 模式，服务启动时都需要显示任务66的接口URL
+    **实现**：
+    - 更新 `apps/run_rebound.py` 的 `start_api_server_background()` 函数
+    - 服务启动时自动显示所有 Order Schedule API 端点：
+      - `POST /orderSchedule/create` - 创建调度计划
+      - `POST /orderSchedule/cancel` - 取消调度计划  
+      - `GET /orderSchedule/query` - 查询调度计划
+      - `GET /orderSchedule/check` - 检查是否应该交易
+    - 优化URL显示：当host为0.0.0.0时显示localhost便于用户访问
+    - 添加API文档引用提示
+    - 创建测试用例：`tests/unit/test_task67.py`（10个测试全部通过）
+    **修改文件**：
+    - `apps/run_rebound.py` - 更新API服务器启动函数
+    - `tests/unit/test_task67.py` - 测试用例（新建）

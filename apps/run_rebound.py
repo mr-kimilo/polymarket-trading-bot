@@ -54,7 +54,7 @@ from strategies.rebound import ReboundStrategy, ReboundConfig
 
 def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
     """
-    在后台线程中启动API服务器 (任务62)
+    在后台线程中启动API服务器 (任务62, 任务67)
     
     Args:
         port: API服务器端口
@@ -80,11 +80,23 @@ def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
     api_thread = threading.Thread(target=run_server, daemon=True, name="APIServer")
     api_thread.start()
     
-    print(f"{Colors.GREEN}✓ API服务器已启动在后台 (http://{host}:{port}){Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {host}:{port}/rules/active - 激活规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {host}:{port}/rules/query - 查询规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {host}:{port}/rules/create - 创建规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {host}:{port}/rules/active/<env> - 获取激活规则{Colors.RESET}\n")
+    # 获取实际的访问地址
+    display_host = "localhost" if host == "0.0.0.0" else host
+    base_url = f"http://{display_host}:{port}"
+    
+    print(f"{Colors.GREEN}✓ API服务器已启动在后台 ({base_url}){Colors.RESET}")
+    print(f"{Colors.CYAN}  [规则管理 API]{Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {base_url}/rules/active - 激活规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {base_url}/rules/query - 查询规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {base_url}/rules/create - 创建规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {base_url}/rules/active/<env> - 获取激活规则{Colors.RESET}")
+    print(f"{Colors.CYAN}  [订单调度 API] (任务65/66/67){Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/create - 创建调度计划{Colors.RESET}")
+    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/cancel - 取消调度计划{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/query - 查询调度计划{Colors.RESET}")
+    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/check - 检查是否应该交易{Colors.RESET}")
+    print(f"{Colors.CYAN}  [API文档]{Colors.RESET}")
+    print(f"{Colors.CYAN}  - 完整文档: docs/api/order-schedule-api.md{Colors.RESET}\n")
 
 
 def load_strategy_type_from_config() -> str:

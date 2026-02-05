@@ -61,6 +61,7 @@ def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
         host: API服务器主机地址
     """
     import threading
+    import time
     
     def run_server():
         try:
@@ -73,30 +74,33 @@ def start_api_server_background(port: int = 5000, host: str = "0.0.0.0"):
                 # 禁用Flask的debug模式和reloader，避免冲突
                 app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
         except Exception as e:
-            print(f"{Colors.YELLOW}API服务器启动失败: {e}{Colors.RESET}")
-            print(f"{Colors.YELLOW}提示: 如需API功能，请安装Flask: pip install flask{Colors.RESET}")
+            print(f"{Colors.YELLOW}API服务器启动失败: {e}{Colors.RESET}", flush=True)
+            print(f"{Colors.YELLOW}提示: 如需API功能，请安装Flask: pip install flask{Colors.RESET}", flush=True)
     
     # 在守护线程中运行API服务器
     api_thread = threading.Thread(target=run_server, daemon=True, name="APIServer")
     api_thread.start()
     
+    # 等待Flask服务器启动
+    time.sleep(0.5)
+    
     # 获取实际的访问地址
     display_host = "localhost" if host == "0.0.0.0" else host
     base_url = f"http://{display_host}:{port}"
     
-    print(f"{Colors.GREEN}✓ API服务器已启动在后台 ({base_url}){Colors.RESET}")
-    print(f"{Colors.CYAN}  [规则管理 API]{Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {base_url}/rules/active - 激活规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {base_url}/rules/query - 查询规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {base_url}/rules/create - 创建规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {base_url}/rules/active/<env> - 获取激活规则{Colors.RESET}")
-    print(f"{Colors.CYAN}  [订单调度 API] (任务65/66/67){Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/create - 创建调度计划{Colors.RESET}")
-    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/cancel - 取消调度计划{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/query - 查询调度计划{Colors.RESET}")
-    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/check - 检查是否应该交易{Colors.RESET}")
-    print(f"{Colors.CYAN}  [API文档]{Colors.RESET}")
-    print(f"{Colors.CYAN}  - 完整文档: docs/api/order-schedule-api.md{Colors.RESET}\n")
+    print(f"{Colors.GREEN}✓ API服务器已启动在后台 ({base_url}){Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  [规则管理 API]{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - POST {base_url}/rules/active - 激活规则{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - GET  {base_url}/rules/query - 查询规则{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - POST {base_url}/rules/create - 创建规则{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - GET  {base_url}/rules/active/<env> - 获取激活规则{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  [订单调度 API] (任务65/66/67){Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/create - 创建调度计划{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - POST {base_url}/orderSchedule/cancel - 取消调度计划{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/query - 查询调度计划{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - GET  {base_url}/orderSchedule/check - 检查是否应该交易{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  [API文档]{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}  - 完整文档: docs/api/order-schedule-api.md{Colors.RESET}\n", flush=True)
 
 
 def load_strategy_type_from_config() -> str:
@@ -121,6 +125,19 @@ def load_direct_sell_from_config() -> bool:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
             return config.get("direct_sell", {}).get("enabled", False)
+        except Exception:
+            pass
+    return False
+
+
+def load_order_schedule_from_config() -> bool:
+    """从config.yaml加载order_schedule配置 (任务68)"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return config.get("order_schedule", {}).get("enabled", False)
         except Exception:
             pass
     return False
@@ -300,17 +317,17 @@ def main():
 
     # Print startup info
     mode_str = f"{Colors.YELLOW}SIMULATION{Colors.RESET}" if simulation_mode else f"{Colors.RED}LIVE TRADING{Colors.RESET}"
-    print(f"\n{Colors.BOLD}{'='*60}{Colors.RESET}")
-    print(f"{Colors.CYAN}Rebound Strategy{Colors.RESET}")
-    print(f"{Colors.BOLD}{'='*60}{Colors.RESET}")
-    print(f"Mode: {mode_str}")
-    print(f"{Colors.CYAN}{strategy_desc}{Colors.RESET}")
-    print(f"Coin: {args.coin}")
-    print(f"Size: ${args.size:.2f} USDC")
-    print(f"Drop Threshold: {drop_threshold:.2f}")
-    print(f"BTC Drop Max: ${btc_drop_max:.2f}")
-    print(f"Active Segments: {segments}")
-    print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n")
+    print(f"\n{Colors.BOLD}{'='*60}{Colors.RESET}", flush=True)
+    print(f"{Colors.CYAN}Rebound Strategy{Colors.RESET}", flush=True)
+    print(f"{Colors.BOLD}{'='*60}{Colors.RESET}", flush=True)
+    print(f"Mode: {mode_str}", flush=True)
+    print(f"{Colors.CYAN}{strategy_desc}{Colors.RESET}", flush=True)
+    print(f"Coin: {args.coin}", flush=True)
+    print(f"Size: ${args.size:.2f} USDC", flush=True)
+    print(f"Drop Threshold: {drop_threshold:.2f}", flush=True)
+    print(f"BTC Drop Max: ${btc_drop_max:.2f}", flush=True)
+    print(f"Active Segments: {segments}", flush=True)
+    print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n", flush=True)
     
     # 启动API服务器 (任务62)
     # 在后台启动API服务器，使其他系统可以调用策略管理接口
@@ -318,8 +335,8 @@ def main():
         api_port = args.api_port if hasattr(args, 'api_port') else 5000
         start_api_server_background(port=api_port)
     except Exception as e:
-        print(f"{Colors.YELLOW}注意: API服务器启动失败 - {e}{Colors.RESET}")
-        print(f"{Colors.YELLOW}策略将继续运行，但API功能不可用{Colors.RESET}\n")
+        print(f"{Colors.YELLOW}注意: API服务器启动失败 - {e}{Colors.RESET}", flush=True)
+        print(f"{Colors.YELLOW}策略将继续运行，但API功能不可用{Colors.RESET}\n", flush=True)
     
     if not simulation_mode:
         print(f"{Colors.RED}WARNING: LIVE TRADING MODE ENABLED!{Colors.RESET}")
@@ -368,6 +385,9 @@ def main():
     # Load profit_and_loss settings from config (任务61)
     pnl_config = load_profit_and_loss_from_config()
     
+    # Load order_schedule setting from config (任务68)
+    order_schedule_enabled = load_order_schedule_from_config()
+    
     strategy_config = ReboundConfig(
         strategy_type=final_strategy_type,
         coin=args.coin,
@@ -387,7 +407,9 @@ def main():
         strategy3_stop_loss_stage_a=pnl_config["strategy3_stop_loss_stage_a"],
         strategy3_stop_loss_stage_bc=pnl_config["strategy3_stop_loss_stage_bc"],
         strategy3_use_gtc_order=pnl_config["strategy3_use_gtc_order"],
-        strategy3_sell_discount=pnl_config["strategy3_sell_discount"]
+        strategy3_sell_discount=pnl_config["strategy3_sell_discount"],
+        # 任务68: Order Schedule配置
+        order_schedule_enabled=order_schedule_enabled
     )
 
     # Create and run strategy
@@ -396,9 +418,9 @@ def main():
     try:
         asyncio.run(strategy.run())
     except KeyboardInterrupt:
-        print(f"\n{Colors.YELLOW}Strategy stopped by user.{Colors.RESET}")
+        print(f"\n{Colors.YELLOW}Strategy stopped by user.{Colors.RESET}", flush=True)
     except Exception as e:
-        print(f"{Colors.RED}Error: {e}{Colors.RESET}")
+        print(f"{Colors.RED}Error: {e}{Colors.RESET}", flush=True)
         if args.debug:
             import traceback
             traceback.print_exc()

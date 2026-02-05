@@ -1,43 +1,116 @@
-# Copilot instructions
+# Copilot Instructions
 
-## Language Policy
+A beginner-friendly Python trading bot for Polymarket. Uses gasless transactions via Builder Program, EIP-712 signing, and WebSocket for real-time data.
 
-All instructions and prompts in this repository must be written in English. This applies to:
+## Architecture
 
-- All rule and instruction files in `.github/instructions/`
-- All prompt files in `.github/prompts/`
-- All documentation and code comments intended for contributors
+```
+src/           # Core library (bot, client, signer, config, websocket_client, database)
+strategies/    # Trading strategies (base.py defines BaseStrategy pattern)
+lib/           # Support components (MarketManager, PriceTracker, PositionManager)
+apps/          # Entry points for running strategies (run_rebound.py, run_flash_crash.py)
+tests/         # Unit tests (tests/) and integration tests (tests/integration/)
+scripts/       # Utility scripts and API server
+```
 
-## Development code generation
+### Key Module Responsibilities
 
-When working with Python code, follow these instructions very carefully.
+| Module | Purpose |
+|--------|---------|
+| `src/bot.py` | `TradingBot` - main async trading interface |
+| `src/client.py` | `ClobClient`, `RelayerClient` - API communication with HMAC auth |
+| `src/signer.py` | EIP-712 order signing (signature_type=2 for Gnosis Safe) |
+| `src/websocket_client.py` | Real-time orderbook via WebSocket |
+| `src/database.py` | PostgreSQL operations with `ReboundOrder` dataclass |
+| `lib/market_manager.py` | 15-minute market discovery via GammaClient |
+| `strategies/base.py` | `BaseStrategy` - inherit this for new strategies |
 
-It is **EXTREMELY important that you follow the instructions in the rule files very carefully.**
+### Data Flow
 
-### Workflow implementation
+1. `TradingBot.place_order()` creates an `Order` dataclass
+2. `OrderSigner.sign_order()` produces EIP-712 signature
+3. `ClobClient.post_order()` submits with Builder HMAC headers
+4. `RelayerClient` handles gasless Safe deployment if needed
 
-**IMPORTANT:** Always follow these steps when implementing new features:
+## Development Workflow
 
-1. Consult any relevant instructions files listed below and start by listing which rule files have been used to guide the implementation (e.g. `Instructions used: [clean-architecture.instructions.md, domain-driven-design.instructions.md]`).
+1. **Consult instructions**: List which `./instructions/*.instructions.md` files guide your implementation
+2. **TDD**: Write tests first - see `./instructions/unit-and-integration-tests.instructions.md`
+3. **Run tests**: `pytest` or `pytest --cov` before committing
+4. **Lint**: Fix ruff/black/mypy warnings
 
-2. Follow TDD when it is possible. Always start new changes by writing new test cases (or changing existing tests).
-   Remember to consult [Unit and Integration Tests](./instructions/unit-and-integration-tests.instructions.md) for details on how to write tests with pytest.
+```bash
+pytest tests/ -v                  # Run all tests
+pytest tests/test_bot.py -v       # Single test file
+python scripts/full_test.py       # Full integration test
+```
 
-3. Always run `pytest` or `python -m pytest` to verify that all tests pass before committing your changes.
-   Don't ask to run the tests, just do it. If you are not sure how to run the tests, ask for help.
-   You can also use `pytest-watch` to run the tests automatically when you change the code.
+## Key Patterns
 
-4. Fix any linting errors (with ruff, black, mypy, etc.) and type checking warnings before going to the next step.
+### Async Trading Methods
 
-5. Ensure code coverage is maintained or improved. Use `pytest --cov` to check coverage.
+All bot methods are async. Use `asyncio.run()` at entry points:
 
-When you see paths like `/[project]/features/[feature]/` in rules, replace [project] with the name of the project you are working on (e.g. `ordering`), and `[feature]` with the name of the feature you are working on (e.g. `verify_or_add_payment`).
+```python
+from src import create_bot_from_env
 
-## Python-specific guidelines
+async def main():
+    bot = create_bot_from_env()
+    result = await bot.place_order(token_id="...", price=0.65, size=10.0, side="BUY")
 
-- Use type hints for all function signatures and class attributes
-- Follow PEP 8 style guide (enforced by black and ruff)
-- Use dataclasses or Pydantic models for data structures
+asyncio.run(main())
+```
+
+### Strategy Development
+
+Inherit from `BaseStrategy` in `strategies/base.py`. Provides MarketManager, PriceTracker, PositionManager:
+
+```python
+from strategies.base import BaseStrategy, StrategyConfig
+
+class MyStrategy(BaseStrategy):
+    async def on_book_update(self, snapshot: OrderbookSnapshot):
+        if snapshot.mid_price < 0.30:
+            await self.buy(side="up", size=self.config.size)
+```
+
+### Configuration Precedence
+
+Environment vars > `config.yaml` > defaults. Load via:
+
+```python
+config = Config.from_env()   # From POLY_* env vars
+config = Config.load("config.yaml")  # From YAML file
+```
+
+### Dataclasses for Data Structures
+
+Use `@dataclass` throughout (not Pydantic). See `src/config.py`, `src/signer.py`, `src/database.py`.
+
+### WebSocket Orderbook
+
+Use callbacks with `@manager.on_book_update` decorator:
+
+```python
+manager = MarketManager(coin="BTC")
+
+@manager.on_book_update
+async def handle_book(snapshot: OrderbookSnapshot):
+    print(f"Mid: {snapshot.mid_price}, Bid: {snapshot.best_bid}")
+```
+
+## External Integrations
+
+- **CLOB API**: `https://clob.polymarket.com` - Order submission
+- **Relayer API**: `https://relayer-v2.polymarket.com` - Gasless transactions
+- **GammaClient**: 15-minute market discovery (BTC/ETH/SOL/XRP Up/Down markets)
+- **PostgreSQL**: Order tracking via `src/database.py`
+
+## Python Guidelines
+
+- Type hints required for all function signatures
+- PEP 8 enforced by black/ruff
+- Use dataclasses for data structures
 - Prefer composition over inheritance
-- Use context managers for resource management
-- Follow the Zen of Python principles
+- Context managers for resources
+- English for all documentation and code comments

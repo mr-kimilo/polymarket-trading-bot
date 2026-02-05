@@ -1490,3 +1490,25 @@ pip install flask
     **修改文件**：
     - `apps/run_rebound.py` - 更新API服务器启动函数
     - `tests/unit/test_task67.py` - 测试用例（新建）
+68. ✅ 增加一个配置config.yaml,只有启动orderSchedule=true才开启判断当前是否在order_schedule的逻辑。
+    **解决**：
+    - 在 config.yaml 添加 `order_schedule.enabled` 配置项
+    - 在 run_rebound.py 添加 `load_order_schedule_from_config()` 函数
+    - 将配置传递给 ReboundConfig 的 `order_schedule_enabled` 参数
+69. ✅ run_monitor.bat运行失败，检查并fix
+    **解决**：
+    - 添加 psycopg2-binary 到依赖安装
+    - 修复数据库表创建顺序（先创建表，再添加缺失列，最后创建索引）
+70. ✅ run_rebound_strategy.bat 有报错日志，检查并fix
+    **解决**：
+    - 修复数据库 `strategy_type` 列不存在的错误（索引创建在列添加之前）
+    - 在 run_rebound_strategy.bat 添加 flask 到依赖安装
+    - 添加策略启动进度日志，使用 flush=True 确保输出立即可见
+71. ✅ run_rebound_strategy.bat 运行之后，没有到交易界面，输出下面就卡住了。我需要找到原因并fix
+    **问题原因**：终端缓冲区被之前的命令输出占用，新输出未能刷新显示
+    **根本原因**：`add_missing_columns()` 方法在执行时被阻塞（可能由于数据库锁或网络延迟）
+    **解决方案**：
+    - 简化数据库初始化流程，移除不必要的日志输出
+    - 为所有print语句添加 `flush=True` 确保实时输出
+    - 优化Flask API服务器启动，等待0.5秒确保后台线程就绪
+    **验证**：策略现在能正常启动并显示交易界面

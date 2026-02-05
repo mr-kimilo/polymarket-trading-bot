@@ -258,8 +258,10 @@ class Database:
             strategy_type VARCHAR(5),
             env VARCHAR(10)
         );
+        """
         
-        -- 创建索引
+        # 索引创建语句（在添加缺失列后执行）
+        create_indexes_sql = """
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_coin ON rebound_orders(coin);
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_status ON rebound_orders(status);
         CREATE INDEX IF NOT EXISTS idx_rebound_orders_created_at ON rebound_orders(created_at);
@@ -271,13 +273,19 @@ class Database:
         try:
             with self._conn.cursor() as cur:
                 cur.execute(create_table_sql)
-            logger.info("Database tables ensured")
+            logger.info("Database table created")
             
-            # 添加缺失的列（用于现有表的迁移）
+            # 添加缺失的列（用于现有表的迁移）- 必须在索引创建前执行
             self.add_missing_columns()
+            
+            # 创建索引（在列存在后）
+            with self._conn.cursor() as cur:
+                cur.execute(create_indexes_sql)
+            logger.info("Database indexes ensured")
             
             # 确保order_schedule表存在 (任务65)
             self.ensure_order_schedule_table()
+            logger.info("Database initialization complete")
         except Exception as e:
             logger.error(f"Failed to create tables: {e}")
     

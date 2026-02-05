@@ -40,7 +40,7 @@ if not exist ".venv\Scripts\python.exe" (
     echo Installing dependencies...
     .venv\Scripts\python.exe -m pip install --upgrade pip > logs\pip_install.log 2>&1
     .venv\Scripts\python.exe -m pip install -r requirements.txt >> logs\pip_install.log 2>&1
-    .venv\Scripts\python.exe -m pip install rich psycopg2-binary >> logs\pip_install.log 2>&1
+    .venv\Scripts\python.exe -m pip install rich psycopg2-binary flask >> logs\pip_install.log 2>&1
 )
 
 echo.

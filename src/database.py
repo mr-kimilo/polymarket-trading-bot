@@ -168,126 +168,67 @@ class Database:
             self._conn.autocommit = True
             logger.info(f"Connected to database {self._name}@{self._host}:{self._port}")
             
-            # 确保表存在
-            self._ensure_tables()
+            # 检查表是否存在（任务1补充：不自动创建）
+            self._check_tables()
             
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
             self._conn = None
     
-    def _ensure_tables(self) -> None:
-        """确保必要的表存在"""
+    def _check_tables(self) -> None:
+        """
+        检查必要的表是否存在（任务1补充）
+        
+        不再自动创建表，只检查并给出提示。
+        如果表不存在，需要手动运行初始化脚本：
+            python scripts/init_database.py
+            或者执行 db_init.sql
+        """
         if not self._conn:
             return
         
-        # 首先检查表是否存在以及结构是否正确
-        check_table_sql = """
-        SELECT column_name FROM information_schema.columns 
-        WHERE table_name = 'rebound_orders' AND column_name = 'coin';
-        """
+        required_tables = ['rebound_orders', 'order_schedule', 'strategy3_rules']
+        missing_tables = []
         
         try:
             with self._conn.cursor() as cur:
-                cur.execute(check_table_sql)
-                result = cur.fetchone()
-                
-                # 如果表存在但没有coin列，先删除旧表
-                if result is None:
-                    # 检查表是否存在
+                for table_name in required_tables:
                     cur.execute("""
                         SELECT EXISTS (
                             SELECT FROM information_schema.tables 
-                            WHERE table_name = 'rebound_orders'
+                            WHERE table_name = %s
                         );
-                    """)
-                    table_exists = cur.fetchone()[0]
-                    if table_exists:
-                        logger.warning("Table rebound_orders exists but has wrong schema. Dropping and recreating...")
-                        cur.execute("DROP TABLE IF EXISTS rebound_orders CASCADE;")
-        except Exception as e:
-            logger.warning(f"Error checking table schema: {e}")
+                    """, (table_name,))
+                    exists = cur.fetchone()[0]
+                    
+                    if not exists:
+                        missing_tables.append(table_name)
+                        logger.warning(f"Table '{table_name}' does not exist")
             
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS rebound_orders (
-            id SERIAL PRIMARY KEY,
-            
-            -- 基本信息
-            coin VARCHAR(10) NOT NULL,
-            side VARCHAR(10) NOT NULL,
-            segment VARCHAR(5) NOT NULL,
-            
-            -- 入场信息
-            entry_price DECIMAL(10, 6) NOT NULL,
-            entry_btc_price DECIMAL(15, 2),
-            size DECIMAL(15, 4) NOT NULL DEFAULT 0,
-            
-            -- 触发条件
-            trigger_up_price DECIMAL(10, 6),
-            trigger_down_price DECIMAL(10, 6),
-            trigger_up_drop DECIMAL(10, 6),
-            trigger_down_drop DECIMAL(10, 6),
-            btc_drop DECIMAL(15, 2),
-            
-            -- 时间信息
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            period_start TIMESTAMP,
-            period_end TIMESTAMP,
-            
-            -- 出场信息
-            exit_price DECIMAL(10, 6),
-            exit_btc_price DECIMAL(15, 2),
-            exit_at TIMESTAMP,
-            
-            -- 盈亏
-            pnl DECIMAL(15, 4),
-            pnl_percent DECIMAL(10, 4),
-            
-            -- 反弹趋势记录 (任务56)
-            rebound_trend TEXT,
-            
-            -- 状态
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            is_simulated BOOLEAN NOT NULL DEFAULT TRUE,
-            
-            -- 市场信息
-            market_slug VARCHAR(255),
-            token_id VARCHAR(255),
-            order_id VARCHAR(255),
-            
-            -- Task 64: 策略类型和环境
-            strategy_type VARCHAR(5),
-            env VARCHAR(10)
-        );
-        """
-        
-        # 索引创建语句（在添加缺失列后执行）
-        create_indexes_sql = """
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_coin ON rebound_orders(coin);
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_status ON rebound_orders(status);
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_created_at ON rebound_orders(created_at);
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_is_simulated ON rebound_orders(is_simulated);
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_strategy_type ON rebound_orders(strategy_type);
-        CREATE INDEX IF NOT EXISTS idx_rebound_orders_env ON rebound_orders(env);
-        """
-        
-        try:
-            with self._conn.cursor() as cur:
-                cur.execute(create_table_sql)
-            logger.info("Database table created")
-            
-            # 添加缺失的列（用于现有表的迁移）- 必须在索引创建前执行
-            self.add_missing_columns()
-            
-            # 创建索引（在列存在后）
-            with self._conn.cursor() as cur:
-                cur.execute(create_indexes_sql)
-            logger.info("Database indexes ensured")
-            
-            # 确保order_schedule表存在 (任务65)
-            self.ensure_order_schedule_table()
-            logger.info("Database initialization complete")
-        except Exception as e:
-            logger.error(f"Failed to create tables: {e}")
+            if missing_tables:
+                error_msg = (
+                    f"\n{'='*60}\n"
+                    f"❌ 数据库表未初始化！\n"
+                    f"{'='*60}\n"
+                    f"缺失的表: {', '.join(missing_tables)}\n\n"
+                    f"请运行以下命令之一来初始化数据库:\n"
+                    f"  1. python scripts/init_database.py\n"
+                    f"  2. psql -U $DATABASE_USER -d $DATABASE_NAME -f db_init.sql\n"
+                    f"{'='*60}\n"
+                )
+                logger.error(error_msg)
+                print(error_msg, flush=True)
+                raise DatabaseError(
+                    f"Database not initialized. Missing tables: {', '.join(missing_tables)}. "
+                    "Please run: python scripts/init_database.py"
+                )
+            else:
+                logger.info("All required database tables exist")
+                
+        except psycopg2.Error as e:
+            logger.error(f"Failed to check tables: {e}")
+            raise DatabaseError(f"Failed to check database tables: {e}")
+
     
     @property
     def is_connected(self) -> bool:
@@ -608,34 +549,37 @@ class Database:
     # ==================== Strategy3 Rules (任务60) ====================
     
     def ensure_strategy3_rules_table(self) -> None:
-        """确保strategy3_rules表存在 (任务60)"""
+        """
+        检查strategy3_rules表是否存在（任务1补充 - 不再自动创建）
+        
+        如果表不存在，会抛出DatabaseError。
+        请先运行: python scripts/init_database.py
+        """
         if not self._conn:
             return
         
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS strategy3_rules (
-            id SERIAL PRIMARY KEY,
-            create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_update_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status VARCHAR(20) NOT NULL DEFAULT 'inactive',
-            env VARCHAR(20) NOT NULL DEFAULT 'simulate',
-            stage_buy VARCHAR(5) NOT NULL DEFAULT 'A',
-            price_down_percentage DECIMAL(5, 4) NOT NULL DEFAULT 0.25,
-            price_down DECIMAL(10, 2) NOT NULL DEFAULT 50.0,
-            take_profit DECIMAL(5, 4) NOT NULL DEFAULT 0.80,
-            stop_loss DECIMAL(5, 4) NOT NULL DEFAULT 0.20
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_strategy3_rules_status ON strategy3_rules(status);
-        CREATE INDEX IF NOT EXISTS idx_strategy3_rules_env ON strategy3_rules(env);
-        """
-        
         try:
             with self._conn.cursor() as cur:
-                cur.execute(create_table_sql)
-            logger.info("strategy3_rules table ensured")
-        except Exception as e:
-            logger.error(f"Failed to create strategy3_rules table: {e}")
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'strategy3_rules'
+                    );
+                """)
+                exists = cur.fetchone()[0]
+                
+                if not exists:
+                    error_msg = (
+                        "Table 'strategy3_rules' does not exist. "
+                        "Please run: python scripts/init_database.py"
+                    )
+                    logger.error(error_msg)
+                    raise DatabaseError(error_msg)
+                    
+                logger.debug("strategy3_rules table exists")
+        except psycopg2.Error as e:
+            logger.error(f"Failed to check strategy3_rules table: {e}")
+            raise DatabaseError(f"Failed to check strategy3_rules table: {e}")
     
     def create_strategy3_rule(
         self,
@@ -849,34 +793,37 @@ class Database:
     # ==================== Order Schedule (任务65) ====================
 
     def ensure_order_schedule_table(self) -> None:
-        """确保order_schedule表存在 (任务65 + 任务65补充)"""
+        """
+        检查order_schedule表是否存在（任务1补充 - 不再自动创建）
+        
+        如果表不存在，会抛出DatabaseError。
+        请先运行: python scripts/init_database.py
+        """
         if not self._conn:
             return
         
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS order_schedule (
-            id SERIAL PRIMARY KEY,
-            create_dt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            env VARCHAR(10) NOT NULL,
-            strategy_type VARCHAR(5) NOT NULL,
-            schedule_date DATE NOT NULL,
-            start_time TIME NOT NULL,
-            end_time TIME NOT NULL,
-            status INTEGER NOT NULL DEFAULT 0
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_order_schedule_env ON order_schedule(env);
-        CREATE INDEX IF NOT EXISTS idx_order_schedule_strategy_type ON order_schedule(strategy_type);
-        CREATE INDEX IF NOT EXISTS idx_order_schedule_date ON order_schedule(schedule_date);
-        CREATE INDEX IF NOT EXISTS idx_order_schedule_status ON order_schedule(status);
-        """
-        
         try:
             with self._conn.cursor() as cur:
-                cur.execute(create_table_sql)
-            logger.info("order_schedule table ensured")
-        except Exception as e:
-            logger.error(f"Failed to create order_schedule table: {e}")
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'order_schedule'
+                    );
+                """)
+                exists = cur.fetchone()[0]
+                
+                if not exists:
+                    error_msg = (
+                        "Table 'order_schedule' does not exist. "
+                        "Please run: python scripts/init_database.py"
+                    )
+                    logger.error(error_msg)
+                    raise DatabaseError(error_msg)
+                    
+                logger.debug("order_schedule table exists")
+        except psycopg2.Error as e:
+            logger.error(f"Failed to check order_schedule table: {e}")
+            raise DatabaseError(f"Failed to check order_schedule table: {e}")
     
     def migrate_order_schedule_table(self) -> None:
         """迁移order_schedule表，将time_period拆分为start_time和end_time (任务65补充)"""
@@ -1173,37 +1120,16 @@ class Database:
 
     def add_missing_columns(self) -> None:
         """
-        添加缺失的列到现有表 (任务64迁移)
+        [已废弃] 添加缺失的列到现有表 (任务1补充)
         
-        用于将新字段添加到已存在的表中
+        此方法已不再使用。所有DDL操作应该通过 db_init.sql 执行。
+        保留此方法仅用于向后兼容。
         """
-        if not self._conn:
-            return
-        
-        alter_statements = [
-            "ALTER TABLE rebound_orders ADD COLUMN IF NOT EXISTS strategy_type VARCHAR(5);",
-            "ALTER TABLE rebound_orders ADD COLUMN IF NOT EXISTS env VARCHAR(10);",
-        ]
-        
-        try:
-            with self._conn.cursor() as cur:
-                for stmt in alter_statements:
-                    try:
-                        cur.execute(stmt)
-                    except Exception as e:
-                        # Column might already exist, ignore error
-                        logger.debug(f"Column might exist: {e}")
-                
-                # Create indexes if not exist
-                try:
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_rebound_orders_strategy_type ON rebound_orders(strategy_type);")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_rebound_orders_env ON rebound_orders(env);")
-                except Exception as e:
-                    logger.debug(f"Index might exist: {e}")
-            
-            logger.info("Added missing columns to rebound_orders table")
-        except Exception as e:
-            logger.error(f"Failed to add missing columns: {e}")
+        logger.warning(
+            "add_missing_columns() is deprecated. "
+            "All DDL operations should be done via db_init.sql"
+        )
+        return
 
 
 # 全局数据库实例（懒加载）

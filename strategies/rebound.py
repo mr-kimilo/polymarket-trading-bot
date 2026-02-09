@@ -82,16 +82,20 @@ class ReboundConfig:
         """根据策略类型设置默认参数"""
         if self.strategy_type == "2":
             # 策略2: C段, UP/DOWN<15%, BTC下跌<30
+            # 策略2持有到周期结束，不使用止盈止损
             self.price_drop_threshold = 0.15
             self.btc_drop_max = 30.0
             self.active_segments = ["C"]
             self.order_segments = ["C"]
+            self.profit_and_loss_enabled = False
         elif self.strategy_type == "1":
             # 策略1: A段, UP/DOWN<30%, BTC下跌<50
+            # 策略1持有到周期结束，不使用止盈止损
             self.price_drop_threshold = 0.30
             self.btc_drop_max = 50.0
             self.active_segments = ["A"]
             self.order_segments = ["A"]
+            self.profit_and_loss_enabled = False
         elif self.strategy_type == "3":
             # 策略3: Profit & Loss 模式
             # 启用 P&L 相关逻辑（take-profit / stop-loss）
@@ -1142,7 +1146,15 @@ class ReboundStrategy:
             del self._active_positions[side]
 
     def _evaluate_positions_for_profit_and_loss(self) -> None:
-        """Evaluate open positions for take-profit or stop-loss rules (strategy 3)."""
+        """Evaluate open positions for take-profit or stop-loss rules (strategy 3 only).
+        
+        策略1和策略2持有到周期结束，不进行止盈止损评估。
+        仅策略3使用动态止盈止损逻辑。
+        """
+        # 策略1和策略2不使用P&L评估，直接持有到周期结束
+        if self.config.strategy_type != "3":
+            return
+
         # For each active position, update peak price and evaluate rules
         for side, pos in list(self._active_positions.items()):
             current_price = self.prices.get_current_price(side)

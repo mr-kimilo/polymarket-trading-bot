@@ -400,8 +400,8 @@ def main():
         auto_claim_enabled=auto_claim_config["enabled"],
         auto_claim_min_balance=auto_claim_config["min_balance"],
         auto_claim_check_interval=auto_claim_config["check_interval"],
-        # 任务61: P&L配置
-        profit_and_loss_enabled=pnl_config["enabled"],
+        # 任务2/61: P&L配置 - 仅策略3使用止盈止损，策略1和2持有到周期结束
+        profit_and_loss_enabled=pnl_config["enabled"] and final_strategy_type == "3",
         strategy3_take_profit_base=pnl_config["strategy3_take_profit_base"],
         strategy3_take_profit_pullback=pnl_config["strategy3_take_profit_pullback"],
         strategy3_stop_loss_stage_a=pnl_config["strategy3_stop_loss_stage_a"],

@@ -53,6 +53,7 @@ run_rebound_live.bat
 - 初始化脚本: [scripts/init_database.py](scripts/init_database.py)
 - SQL脚本: [db_init.sql](db_init.sql)
 
+任务2. 策略1的情况下，我希望买了之后持有到最后，而不是中间止损，检查逻辑并修改。
 ---
 
 ## 原问题（已解决）

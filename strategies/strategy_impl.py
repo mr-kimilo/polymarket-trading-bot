@@ -29,6 +29,8 @@ class Strategy1(BaseReboundStrategy):
         config.order_segments = ["A"]
         config.price_drop_threshold = 0.30
         config.btc_drop_max = 50.0
+        # 策略1持有到周期结束，不使用止盈止损
+        config.profit_and_loss_enabled = False
         super().__init__(bot, config)
     
     def should_enter_trade(self, side: str, segment: str) -> Tuple[bool, Dict]:
@@ -120,6 +122,8 @@ class Strategy2(BaseReboundStrategy):
         config.order_segments = ["C"]
         config.price_drop_threshold = 0.15
         config.btc_drop_max = 30.0
+        # 策略2持有到周期结束，不使用止盈止损
+        config.profit_and_loss_enabled = False
         super().__init__(bot, config)
     
     def should_enter_trade(self, side: str, segment: str) -> Tuple[bool, Dict]:

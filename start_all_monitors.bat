@@ -11,7 +11,7 @@ REM
 REM Both monitors run independently with auto-restart capability.
 REM 
 REM Features:
-REM   - Keep-awake prevents system sleep (F15 key every 60s)
+REM   - Keep-awake prevents system sleep (SetThreadExecutionState API)
 REM   - Data monitor saves 15-min period data to files/
 REM   - Rebound strategy detects rapid price drops
 REM   - Auto-restart every 12 hours

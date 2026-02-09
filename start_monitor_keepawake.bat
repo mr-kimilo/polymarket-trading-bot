@@ -8,9 +8,10 @@ REM 1. Starts a PowerShell keep-awake process in background
 REM 2. Runs the orderbook monitor in silent mode with live status output
 REM 3. Auto-restarts every 12 hours or when connection is lost
 REM 
-REM The keep-awake process simulates keyboard activity (F15 key) every 60
-REM seconds to prevent Windows from sleeping. This method doesn't require
-REM admin privileges.
+REM The keep-awake process uses the Windows SetThreadExecutionState API
+REM to prevent the system from entering sleep/standby. This is more
+REM reliable than simulating keystrokes and works even when minimized.
+REM No admin privileges required.
 REM 
 REM Features:
 REM   - Auto-restart every 12 hours to prevent connection issues
@@ -47,7 +48,7 @@ echo   [1/4] Setting up keep-awake process...
 REM Start keep-awake PowerShell script in background (minimized, hidden)
 start "KeepAwake" /min powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0keep_awake.ps1"
 
-echo         Keep-awake started (F15 key every 60s)
+echo         Keep-awake started (SetThreadExecutionState API)
 echo.
 echo   [2/4] Checking Python environment...
 

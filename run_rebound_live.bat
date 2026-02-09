@@ -5,9 +5,14 @@ REM  Rebound Strategy - LIVE TRADING Mode
 REM  真实交易模式 - 请谨慎使用！
 REM ============================================================
 REM 
+REM 功能:
+REM   1. 启动防待机进程（防止系统休眠）
+REM   2. 运行 Rebound 真实交易策略
+REM   3. 崩溃自动重启
+REM
 REM 配置说明:
 REM   --coin BTC      : 交易币种
-REM   --size 3        : 每笔交易3美元
+REM   --size 2        : 每笔交易2美元
 REM   --live          : 启用真实交易
 REM 
 REM 环境变量要求（.env文件）:
@@ -41,6 +46,12 @@ if exist .venv\Scripts\activate.bat (
     call .venv\Scripts\activate.bat
 )
 
+REM 启动防待机进程（后台运行，防止系统休眠）
+echo [%date% %time%] 启动防待机进程...
+start "KeepAwake" /min powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0keep_awake.ps1"
+echo [%date% %time%] 防待机已启动 (SetThreadExecutionState API)
+echo.
+
 :start
 echo [%date% %time%] 启动 Rebound 真实交易策略...
 echo.
@@ -57,6 +68,11 @@ if %ERRORLEVEL% NEQ 0 (
     timeout /t 10 /nobreak
     goto start
 )
+
+REM 停止防待机进程
+echo [%date% %time%] 停止防待机进程...
+taskkill /FI "WINDOWTITLE eq KeepAwake*" >nul 2>&1
+powershell -Command "Get-Process powershell | Where-Object {$_.MainWindowTitle -like '*KeepAwake*'} | Stop-Process -Force" >nul 2>&1
 
 echo.
 echo 按任意键退出或关闭窗口...

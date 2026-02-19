@@ -57,7 +57,7 @@ echo [%date% %time%] 启动 Rebound 真实交易策略...
 echo.
 
 REM 真实交易: --live 启用, --size 2 每笔2美元
-python apps/run_rebound.py --coin BTC --size 2 --live
+python apps/run_rebound.py --coin BTC --size 3 --live
 
 echo.
 echo [%date% %time%] 策略已停止。

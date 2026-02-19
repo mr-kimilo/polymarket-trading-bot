@@ -28,12 +28,20 @@ class GammaClient(ThreadLocalSessionMixin):
 
     DEFAULT_HOST = "https://gamma-api.polymarket.com"
 
-    # Supported coins and their slug prefixes
+    # Supported coins and their slug prefixes (15-minute markets)
     COIN_SLUGS = {
         "BTC": "btc-updown-15m",
         "ETH": "eth-updown-15m",
         "SOL": "sol-updown-15m",
         "XRP": "xrp-updown-15m",
+    }
+
+    # 5-minute market slug prefixes
+    COIN_SLUGS_5M = {
+        "BTC": "btc-updown-5m",
+        "ETH": "eth-updown-5m",
+        "SOL": "sol-updown-5m",
+        "XRP": "xrp-updown-5m",
     }
 
     def __init__(self, host: str = DEFAULT_HOST, timeout: int = 10):
@@ -109,6 +117,55 @@ class GammaClient(ThreadLocalSessionMixin):
 
         # Try previous window (might still be active)
         prev_ts = current_ts - 900
+        slug = f"{prefix}-{prev_ts}"
+        market = self.get_market_by_slug(slug)
+
+        if market and market.get("acceptingOrders"):
+            return market
+
+        return None
+
+    def get_current_5m_market(self, coin: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the current active 5-minute market for a coin.
+
+        Args:
+            coin: Coin symbol (BTC, ETH, SOL, XRP)
+
+        Returns:
+            Market data for the current 5-minute window, or None
+        """
+        coin = coin.upper()
+        if coin not in self.COIN_SLUGS_5M:
+            raise ValueError(f"Unsupported coin: {coin}. Use: {list(self.COIN_SLUGS_5M.keys())}")
+
+        prefix = self.COIN_SLUGS_5M[coin]
+
+        # Calculate current and next 5-minute window timestamps
+        now = datetime.now(timezone.utc)
+
+        # Round to current 5-minute window
+        minute = (now.minute // 5) * 5
+        current_window = now.replace(minute=minute, second=0, microsecond=0)
+        current_ts = int(current_window.timestamp())
+
+        # Try current window
+        slug = f"{prefix}-{current_ts}"
+        market = self.get_market_by_slug(slug)
+
+        if market and market.get("acceptingOrders"):
+            return market
+
+        # Try next window (in case current just ended)
+        next_ts = current_ts + 300  # 5 minutes
+        slug = f"{prefix}-{next_ts}"
+        market = self.get_market_by_slug(slug)
+
+        if market and market.get("acceptingOrders"):
+            return market
+
+        # Try previous window (might still be active)
+        prev_ts = current_ts - 300
         slug = f"{prefix}-{prev_ts}"
         market = self.get_market_by_slug(slug)
 
@@ -202,17 +259,23 @@ class GammaClient(ThreadLocalSessionMixin):
                 result[str(outcome).lower()] = cast(values[i])
         return result
 
-    def get_market_info(self, coin: str) -> Optional[Dict[str, Any]]:
+    def get_market_info(
+        self, coin: str, interval: str = "15m"
+    ) -> Optional[Dict[str, Any]]:
         """
-        Get comprehensive market info for current 15-minute market.
+        Get comprehensive market info for current market.
 
         Args:
             coin: Coin symbol
+            interval: Market interval ("15m" or "5m")
 
         Returns:
             Dictionary with market info including token IDs and prices
         """
-        market = self.get_current_15m_market(coin)
+        if interval == "5m":
+            market = self.get_current_5m_market(coin)
+        else:
+            market = self.get_current_15m_market(coin)
         if not market:
             return None
 

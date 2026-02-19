@@ -154,6 +154,7 @@ class MarketManager:
         coin: str = "BTC",
         market_check_interval: float = 30.0,
         auto_switch_market: bool = True,
+        interval: str = "15m",
     ):
         """
         Initialize market manager.
@@ -162,10 +163,12 @@ class MarketManager:
             coin: Coin symbol (BTC, ETH, SOL, XRP)
             market_check_interval: Seconds between market checks
             auto_switch_market: Auto switch when market changes
+            interval: Market interval ("15m" or "5m")
         """
         self.coin = coin.upper()
         self.market_check_interval = market_check_interval
         self.auto_switch_market = auto_switch_market
+        self.interval = interval
 
         # Clients
         self.gamma = GammaClient()
@@ -294,12 +297,12 @@ class MarketManager:
 
     def discover_market(self, update_state: bool = True) -> Optional[MarketInfo]:
         """
-        Discover current 15-minute market.
+        Discover current market (5m or 15m based on interval setting).
 
         Returns:
             MarketInfo if found, None otherwise
         """
-        market_data = self.gamma.get_market_info(self.coin)
+        market_data = self.gamma.get_market_info(self.coin, interval=self.interval)
 
         if not market_data:
             return None

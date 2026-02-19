@@ -457,65 +457,62 @@ class ReboundStrategy:
         
         return None
     
-    def _fetch_btc_price_chainlink(self) -> Optional[float]:
-        """通过Chainlink获取BTC价格（Polymarket使用的数据源）"""
+    def _fetch_binance_kline_open_price(self, interval: str = "15m") -> Optional[float]:
+        """通过Binance Kline API获取当前 K线的真实开盘价
+
+        Args:
+            interval: K线周期, 如 "5m", "15m"
+
+        Returns:
+            当前K线的开盘价, 失败返回None
+        """
         try:
-            from web3 import Web3
-            
-            # Polygon RPC
-            rpc_url = 'https://polygon-rpc.com'
-            w3 = Web3(Web3.HTTPProvider(rpc_url))
-            
-            # Chainlink BTC/USD Price Feed on Polygon
-            # https://docs.chain.link/data-feeds/price-feeds/addresses?network=polygon
-            CHAINLINK_BTC_USD_POLYGON = '0xc907E116054Ad103354f2D350FD2514433D57F6f'
-            
-            # ABI for Chainlink Price Feed
-            PRICE_FEED_ABI = [
-                {
-                    'inputs': [],
-                    'name': 'latestRoundData',
-                    'outputs': [
-                        {'name': 'roundId', 'type': 'uint80'},
-                        {'name': 'answer', 'type': 'int256'},
-                        {'name': 'startedAt', 'type': 'uint256'},
-                        {'name': 'updatedAt', 'type': 'uint256'},
-                        {'name': 'answeredInRound', 'type': 'uint80'}
-                    ],
-                    'stateMutability': 'view',
-                    'type': 'function'
-                },
-                {
-                    'inputs': [],
-                    'name': 'decimals',
-                    'outputs': [{'name': '', 'type': 'uint8'}],
-                    'stateMutability': 'view',
-                    'type': 'function'
-                }
-            ]
-            
-            contract = w3.eth.contract(address=CHAINLINK_BTC_USD_POLYGON, abi=PRICE_FEED_ABI)
-            decimals = contract.functions.decimals().call()
-            round_data = contract.functions.latestRoundData().call()
-            price = round_data[1] / (10 ** decimals)
-            
-            return price
+            import requests as req
+            from datetime import datetime, timezone
+
+            interval_minutes = int(interval.replace("m", ""))
+            now = datetime.now(timezone.utc)
+            minute = (now.minute // interval_minutes) * interval_minutes
+            window_start = now.replace(minute=minute, second=0, microsecond=0)
+            start_ms = int(window_start.timestamp() * 1000)
+
+            url = "https://api.binance.com/api/v3/klines"
+            params = {
+                "symbol": "BTCUSDT",
+                "interval": interval,
+                "startTime": str(start_ms),
+                "limit": "1",
+            }
+            response = req.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                klines = response.json()
+                if klines and len(klines) > 0:
+                    return float(klines[0][1])  # open price
         except Exception:
-            return None
-    
+            pass
+        return None
+
     def _fetch_btc_price(self) -> Optional[float]:
-        """获取BTC当前价格
-        
-        优先使用Chainlink（Polymarket使用的数据源），
-        如果失败则回退到其他API。
+        """获取BTC当前实时价格（来自Binance）
+
+        优先使用Binance Ticker API，
+        如果失败则回退到CoinGecko/CoinCap。
         """
         import requests
-        
-        # 首选：Chainlink（与Polymarket使用相同数据源）
-        price = self._fetch_btc_price_chainlink()
-        if price:
-            return price
-        
+
+        # 首选：Binance Ticker
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price"
+            params = {"symbol": "BTCUSDT"}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                price_str = data.get("price")
+                if price_str:
+                    return float(price_str)
+        except Exception:
+            pass
+
         # 备用: CoinGecko
         try:
             url = "https://api.coingecko.com/api/v3/simple/price"
@@ -528,7 +525,7 @@ class ReboundStrategy:
                     return price
         except Exception:
             pass
-        
+
         # 备用: CoinCap
         try:
             url = "https://api.coincap.io/v2/assets/bitcoin"
@@ -540,32 +537,31 @@ class ReboundStrategy:
                     return float(price_str)
         except Exception:
             pass
-        
-        # 备用: Binance
-        try:
-            url = "https://api.binance.com/api/v3/ticker/price"
-            params = {"symbol": "BTCUSDT"}
-            response = requests.get(url, params=params, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                price_str = data.get("price")
-                if price_str:
-                    return float(price_str)
-        except Exception:
-            pass
-        
+
         return None
     
     def _update_btc_price(self) -> None:
-        """更新BTC价格"""
+        """更新BTC价格
+
+        首次调用时使用Binance Kline API获取15分钟K线的真实开盘价作为开始价格，
+        后续使用Binance Ticker获取实时价格。
+        """
         now = time.time()
         if now - self.last_btc_update < 5:  # 每5秒更新一次
             return
-        
+
+        # 首次调用：使用Kline API获取真实的15分钟K线开盘价
+        if self.btc_price_start is None:
+            kline_open = self._fetch_binance_kline_open_price("15m")
+            if kline_open:
+                self.btc_price_start = kline_open
+                self.btc_price_current = kline_open
+                self.last_btc_update = now
+                return
+
+        # 后续更新：使用实时价格
         price = self._fetch_btc_price()
         if price:
-            if self.btc_price_start is None:
-                self.btc_price_start = price
             self.btc_price_current = price
             self.last_btc_update = now
     
@@ -1232,8 +1228,13 @@ class ReboundStrategy:
         # 重置已关闭订单的趋势跟踪 (任务56补充)
         self._closed_positions_for_trend.clear()
         
-        # 重置BTC开始价格
-        self.btc_price_start = self.btc_price_current
+        # 重置BTC开始价格：使用Binance Kline API获取新周期的真实开盘价
+        kline_open = self._fetch_binance_kline_open_price("15m")
+        if kline_open:
+            self.btc_price_start = kline_open
+        else:
+            # Kline失败时回退为当前价格
+            self.btc_price_start = self.btc_price_current
         
         # 重置周期开始时间
         self._market_start_time = time.time()
@@ -1329,7 +1330,7 @@ class ReboundStrategy:
             btc_drop = (self.btc_price_start - (self.btc_price_current or 0)) 
             color = Colors.GREEN if btc_drop <= 0 else Colors.RED
             lines.append(
-                f"BTC: Start=${self.btc_price_start:,.2f} | "
+                f"BTC (Binance): Start=${self.btc_price_start:,.2f} | "
                 f"Current={color}${self.btc_price_current:,.2f}{Colors.RESET} | "
                 f"Drop={color}${btc_drop:+.2f}{Colors.RESET}"
             )

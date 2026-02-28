@@ -62,6 +62,13 @@ run_rebound_live.bat
 ✅ 补充3，检查15分钟市场的开始价格，我需要所有获取价格都用补充2的方式获取。
 
 ✅ 任务4.根据任务3的补充2，run_rebound_live.bat里面获取开始价格的方式，需要修改获取币安的15分钟线开始价格，而不是poly market的价格，以及实时价格也改成币安的价格。
+✅ 任务5.部署当前代码到服务器
+- 推荐平台: Oracle Cloud 永久免费层（ARM 4核24GB，美国Ashburn机房）
+- 备选: RackNerd (~6元/月)、Google Cloud 免费层
+- 部署指南: [docs/server_deployment_guide.md](docs/server_deployment_guide.md)
+- Linux启动脚本: `deploy/` 目录（run_rebound_live.sh, start_monitor.sh, start_all.sh）
+- systemd服务文件: `deploy/*.service`（24/7自动运行）
+- 一键部署: `./deploy/setup_server.sh`
 ---
 
 ## 原问题（已解决）

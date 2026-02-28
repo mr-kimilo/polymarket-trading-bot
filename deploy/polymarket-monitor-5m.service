@@ -1,0 +1,24 @@
+[Unit]
+Description=Polymarket 5-min Market Monitor
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-trading-bot
+Environment=PATH=/home/ubuntu/polymarket-trading-bot/.venv/bin:/usr/bin:/bin
+EnvironmentFile=/home/ubuntu/polymarket-trading-bot/.env
+ExecStart=/home/ubuntu/polymarket-trading-bot/.venv/bin/python orderbook_5m.py --coin BTC --silent --max-runtime 12
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/polymarket-trading-bot
+
+[Install]
+WantedBy=multi-user.target

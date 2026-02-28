@@ -1,0 +1,24 @@
+[Unit]
+Description=Polymarket Rebound Trading Bot
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polymarket-trading-bot
+Environment=PATH=/home/ubuntu/polymarket-trading-bot/.venv/bin:/usr/bin:/bin
+EnvironmentFile=/home/ubuntu/polymarket-trading-bot/.env
+ExecStart=/home/ubuntu/polymarket-trading-bot/.venv/bin/python apps/run_rebound.py --coin BTC --size 3 --live
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/polymarket-trading-bot
+
+[Install]
+WantedBy=multi-user.target

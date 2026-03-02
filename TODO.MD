@@ -70,7 +70,7 @@ run_rebound_live.bat
 - systemd服务文件: `deploy/*.service`（24/7自动运行）
 - 一键部署: `./deploy/setup_server.sh`
 ---
-
+任务6.风险控制，现在需要检查前24小时的btc价格（k线图），如果最高价和最低价之间相差大于4000点，输出红色提示字体，在启动页面要手动确认之后再继续。
 ## 原问题（已解决）
 `run_rebound_live.bat` 启动后在 "Database table created" 输出后卡住不动。
 

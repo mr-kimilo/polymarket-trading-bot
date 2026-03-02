@@ -47,6 +47,7 @@ logging.getLogger("src.websocket_client").setLevel(logging.WARNING)
 logging.getLogger("src.bot").setLevel(logging.WARNING)
 
 from lib.console import Colors
+from lib.risk_control import check_volatility_before_start
 from src.bot import TradingBot
 from src.config import Config
 from strategies.rebound import ReboundStrategy, ReboundConfig
@@ -329,6 +330,10 @@ def main():
     print(f"Active Segments: {segments}", flush=True)
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n", flush=True)
     
+    # 任务6: 风险控制 - 检查BTC 24小时波动性
+    # 如果最高价和最低价之间相差大于4000点，需要手动确认
+    check_volatility_before_start(threshold=4000.0)
+
     # 启动API服务器 (任务62)
     # 在后台启动API服务器，使其他系统可以调用策略管理接口
     try:

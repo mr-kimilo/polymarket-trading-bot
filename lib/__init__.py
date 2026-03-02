@@ -17,6 +17,7 @@ from lib.console import Colors
 from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker, PricePoint, FlashCrashEvent
 from lib.position_manager import PositionManager, Position
+from lib.risk_control import RiskChecker, VolatilityResult
 
 __all__ = [
     "Colors",
@@ -27,4 +28,6 @@ __all__ = [
     "FlashCrashEvent",
     "PositionManager",
     "Position",
+    "RiskChecker",
+    "VolatilityResult",
 ]

@@ -979,23 +979,76 @@ class ReboundStrategy:
                 self.log("Error: Bot not initialized for LIVE trading", "error")
                 return False
             
-            buy_price = min(current_price + 0.02, 0.99)
-            self.log(f"[LIVE] Placing order: BUY {side.upper()} @ {buy_price:.4f}, size={size:.2f}", "trade")
+            # 任务14: BUY下单 + 成交验证 + 重试
+            # GTC订单提交成功≠成交，需要轮询验证
+            buy_filled = False
+            max_buy_retries = 3
+            base_premium = 0.02  # 初始高于mid_price的溢价
+            premium_increment = 0.02  # 每次重试增加溢价
             
-            # BTC UP/DOWN 15-minute markets have 10% taker fee (1000 bps)
-            result = await self.bot.place_order(
-                token_id=token_id,
-                price=buy_price,
-                size=size,
-                side="BUY",
-                fee_rate_bps=1000  # 10% taker fee for BTC 15m markets
-            )
-            
-            if result.success:
+            for attempt in range(max_buy_retries + 1):
+                premium = base_premium + attempt * premium_increment
+                buy_price = min(current_price + premium, 0.99)
+                
+                self.log(
+                    f"[LIVE] Placing BUY {side.upper()} @ {buy_price:.4f}, "
+                    f"size={size:.2f} (attempt {attempt + 1}/{max_buy_retries + 1})",
+                    "trade"
+                )
+                
+                # BTC UP/DOWN 15-minute markets have 10% taker fee (1000 bps)
+                result = await self.bot.place_order(
+                    token_id=token_id,
+                    price=buy_price,
+                    size=size,
+                    side="BUY",
+                    fee_rate_bps=1000
+                )
+                
+                if not result.success:
+                    self.log(f"[LIVE] BUY order rejected: {result.message}", "error")
+                    return False
+                
                 order.order_id = result.order_id
-                self.log(f"[LIVE] Order placed successfully: {result.order_id}", "success")
-            else:
-                self.log(f"[LIVE] Order failed: {result.message}", "error")
+                self.log(f"[LIVE] BUY order accepted: {result.order_id}", "info")
+                
+                # 验证成交状态
+                fill_result = await self._wait_for_order_fill(result.order_id, timeout=15.0)
+                
+                if fill_result["filled"]:
+                    buy_filled = True
+                    actual_price = buy_price  # GTC fill at submitted price
+                    order.entry_price = actual_price
+                    self.log(f"[LIVE] BUY filled @ {actual_price:.4f}", "success")
+                    break
+                
+                # 未成交 → 取消并重试
+                self.log(
+                    f"[LIVE] BUY not filled (status={fill_result['status']}), "
+                    f"cancelling order {result.order_id}",
+                    "warning"
+                )
+                try:
+                    await self.bot.cancel_order(result.order_id)
+                except Exception as e:
+                    self.log(f"[LIVE] Cancel failed: {e}", "warning")
+                
+                if attempt < max_buy_retries:
+                    next_premium = base_premium + (attempt + 1) * premium_increment
+                    self.log(
+                        f"[LIVE] Retrying with higher price (+{next_premium:.2f})",
+                        "info"
+                    )
+            
+            if not buy_filled:
+                self.log(
+                    f"[LIVE] BUY failed after {max_buy_retries + 1} attempts, "
+                    f"order not filled",
+                    "error"
+                )
+                # 记录buy_failed到数据库
+                order.status = "buy_failed"
+                self.db.create_rebound_order(order)
                 return False
         else:
             self.log(f"[SIMULATED] Would BUY {side.upper()} @ {current_price:.4f}", "trade")
@@ -1004,21 +1057,23 @@ class ReboundStrategy:
         db_order_id = self.db.create_rebound_order(order)
         if db_order_id:
             self._current_period_orders.append(db_order_id)
+            # 任务14: 使用实际成交价格（live模式下order.entry_price已更新为fill价格）
+            actual_entry = order.entry_price if not self.config.simulation_mode else current_price
             self._active_positions[side] = {
                 "db_id": db_order_id,
-                "entry_price": current_price,
+                "entry_price": actual_entry,
                 "size": size,
                 "entry_time": time.time()
             }
             # initialize P&L tracking for strategy_type == "3"
             if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
                 # record peak at entry and mark TP not yet eligible
-                self._position_peak_price[side] = current_price
+                self._position_peak_price[side] = actual_entry
                 self._active_positions[side]["_tp_eligible"] = False
             
             mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
             self.log(
-                f"[{mode_str}] Opened {side.upper()} position @ {current_price:.4f} "
+                f"[{mode_str}] Opened {side.upper()} position @ {actual_entry:.4f} "
                 f"(size={size:.2f}, segment={trigger_info.get('segment')})",
                 "trade"
             )

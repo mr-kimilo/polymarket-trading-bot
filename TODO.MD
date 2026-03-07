@@ -166,6 +166,33 @@ run_rebound_live.bat
   - `TestExecuteCloseLiveWithFillVerification`: 7个测试（即时成交/轮询成交/取消重试/递增折扣/失败状态/FOK/折扣上限）
 
 任务14.策略3，是prod为啥没有下单成功？只是插入了数据库，并更新了数据。
+- **根本原因分析**:
+  1. **GTC BUY订单提交成功≠成交**: `_execute_trade()`中`bot.place_order()`返回`result.success=True`仅表示CLOB接受了GTC订单，不代表订单已成交
+  2. **无BUY成交验证**: 下GTC买单后，未调用`_wait_for_order_fill()`验证是否实际成交，直接将订单插入数据库标记为`OPEN`
+  3. **虚假持仓**: 未成交的BUY订单被当作真实持仓，P&L监控基于从未建立的仓位运行
+  4. **DB使用mid_price而非成交价格**: `entry_price`和`_position_peak_price`使用orderbook mid_price而非实际买入成交价
+  5. 这是任务13（SELL端）的镜像问题，发生在BUY端
+- **修复内容** (`_execute_trade()`):
+  - BUY下单后调用`_wait_for_order_fill()`验证成交状态（15秒超时，2秒轮询间隔）
+  - 未成交时取消订单并以更高价格重试（每次+0.02溢价，最多3次重试共4次尝试）
+  - 价格递增：初始 mid+0.02, 重试1 mid+0.04, 重试2 mid+0.06, 重试3 mid+0.08
+  - 买入价格上限0.99
+  - 所有重试失败后，DB状态标记为`buy_failed`，不创建活跃持仓
+  - CLOB拒绝订单（`result.success=False`）时立即返回，不重试
+  - 使用实际BUY成交价格更新`order.entry_price`、`_active_positions`和`_position_peak_price`
+  - `cancel`失败不阻塞后续重试
+- **新增测试**: `tests/unit/test_task14_buy_fill_verify.py` (11个测试，全部通过)
+  - `test_buy_fills_immediately`: BUY首次即成交
+  - `test_buy_not_filled_cancels_and_retries`: 未成交→取消→重试成功
+  - `test_buy_all_retries_fail_returns_false`: 所有重试失败→buy_failed
+  - `test_buy_progressive_premium_increases`: 溢价递增验证
+  - `test_buy_price_capped_at_0_99`: 价格上限验证
+  - `test_buy_order_rejected_returns_false_immediately`: CLOB拒绝→不重试
+  - `test_entry_price_updated_to_fill_price`: 使用成交价而非mid_price
+  - `test_simulation_mode_skips_fill_verification`: 模拟模式跳过验证
+  - `test_strategy3_pnl_tracking_uses_fill_price`: P&L peak使用成交价
+  - `test_cancel_failure_does_not_block_retry`: cancel失败不阻塞
+  - `test_no_bot_in_live_mode_returns_false`: 无bot返回失败
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

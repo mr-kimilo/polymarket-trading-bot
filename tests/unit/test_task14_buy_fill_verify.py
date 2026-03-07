@@ -1,16 +1,20 @@
 """
-Tests for Task 14: Fix BUY order fill verification in _execute_trade().
+Tests for Task 14: Fix BUY order fill verification and CLOB API response handling.
 
 Instructions used: [clean-architecture.instructions.md, unit-and-integration-tests.instructions.md,
                     coding-style-python.instructions.md]
 
 Root causes fixed:
-1. GTC BUY order submission success ≠ order filled. result.success only means the order
+1. OrderResult.from_response() treated success=True as order placed, but CLOB API
+   returns success=True with errorMsg for rejected orders (INVALID_ORDER_MIN_SIZE,
+   INVALID_ORDER_NOT_ENOUGH_BALANCE, etc). Error messages were silently discarded.
+2. GTC BUY order submission success ≠ order filled. result.success only means the order
    was accepted by CLOB, not that it was matched/filled.
-2. No fill verification after placing GTC buy orders - code treated CLOB acceptance
+3. No fill verification after placing GTC buy orders — code treated CLOB acceptance
    as fill confirmation, inserting DB records for unfilled positions.
-3. No cancellation and retry with higher price when BUY order doesn't fill.
-4. DB entry_price used mid_price instead of actual fill price.
+4. _active_positions did not store token_id, causing wrong token when selling
+   after market rotation.
+5. DB entry_price used mid_price instead of actual fill price.
 """
 
 import pytest
@@ -269,3 +273,122 @@ class TestBuyFillVerification:
         result = await strategy._execute_trade("up", trigger_info)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_active_positions_stores_token_id(self):
+        """_active_positions should store token_id for later SELL use."""
+        strategy = _make_strategy()
+        strategy.bot.place_order.return_value = _make_order_result()
+        strategy._wait_for_order_fill = AsyncMock(
+            return_value={"filled": True, "size_matched": 10.0, "status": "matched"}
+        )
+
+        trigger_info = {"segment": "A", "up_price": 0.30, "down_price": 0.70, "btc_drop": 10}
+        await strategy._execute_trade("up", trigger_info)
+
+        assert "token_id" in strategy._active_positions["up"]
+        assert strategy._active_positions["up"]["token_id"] == "token_up"
+
+
+class TestOrderResultFromResponse:
+    """Test OrderResult.from_response() CLOB API response parsing."""
+
+    def test_success_true_no_error_means_success(self):
+        """success=True with no errorMsg is a real success."""
+        from src.bot import OrderResult
+        resp = {"success": True, "orderId": "ord_123", "status": "live", "errorMsg": ""}
+        result = OrderResult.from_response(resp)
+        assert result.success is True
+        assert result.order_id == "ord_123"
+        assert result.status == "live"
+
+    def test_success_true_with_error_msg_means_failure(self):
+        """success=True with errorMsg should be treated as failure (CLOB API quirk)."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "errorMsg": "order is invalid. Size lower than the minimum",
+            "orderId": None,
+            "status": None,
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+        assert "Size lower than the minimum" in result.message
+
+    def test_success_true_not_enough_balance(self):
+        """INVALID_ORDER_NOT_ENOUGH_BALANCE returns success=True but has errorMsg."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "errorMsg": "not enough balance / allowance",
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+        assert "not enough balance" in result.message
+
+    def test_success_true_invalid_tick_size(self):
+        """INVALID_ORDER_MIN_TICK_SIZE returns success=True but has errorMsg."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "errorMsg": "order is invalid. Price breaks minimum tick size rules",
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+        assert "tick size" in result.message
+
+    def test_success_true_duplicated_order(self):
+        """INVALID_ORDER_DUPLICATED returns success=True but has errorMsg."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "errorMsg": "order is invalid. Duplicated. Same order has already been placed",
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+
+    def test_success_true_fok_not_filled(self):
+        """FOK_ORDER_NOT_FILLED_ERROR returns success=True but has errorMsg."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "errorMsg": "order couldn't be fully filled, FOK orders are fully filled/killed",
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+
+    def test_success_false_is_failure(self):
+        """success=False should always mean failure."""
+        from src.bot import OrderResult
+        resp = {"success": False, "errorMsg": "some server error"}
+        result = OrderResult.from_response(resp)
+        assert result.success is False
+        assert "some server error" in result.message
+
+    def test_matched_order_is_success(self):
+        """Order with status=matched and no errorMsg is successful."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "orderId": "ord_456",
+            "status": "matched",
+            "errorMsg": "",
+            "orderHashes": ["0xabc"],
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is True
+        assert result.order_id == "ord_456"
+        assert result.status == "matched"
+
+    def test_delayed_order_is_success(self):
+        """Delayed order (no errorMsg) should be treated as success."""
+        from src.bot import OrderResult
+        resp = {
+            "success": True,
+            "orderId": "ord_789",
+            "status": "delayed",
+            "errorMsg": "",
+        }
+        result = OrderResult.from_response(resp)
+        assert result.success is True
+        assert result.status == "delayed"

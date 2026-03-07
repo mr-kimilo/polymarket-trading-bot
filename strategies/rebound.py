@@ -1063,7 +1063,8 @@ class ReboundStrategy:
                 "db_id": db_order_id,
                 "entry_price": actual_entry,
                 "size": size,
-                "entry_time": time.time()
+                "entry_time": time.time(),
+                "token_id": token_id,  # 任务14: 保存token_id用于后续卖出
             }
             # initialize P&L tracking for strategy_type == "3"
             if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":

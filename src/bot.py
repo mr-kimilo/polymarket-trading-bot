@@ -76,15 +76,27 @@ class OrderResult:
 
     @classmethod
     def from_response(cls, response: Dict[str, Any]) -> "OrderResult":
-        """Create from API response."""
+        """Create from API response.
+        
+        任务14: CLOB API returns success=True even for order errors like
+        INVALID_ORDER_MIN_SIZE, INVALID_ORDER_NOT_ENOUGH_BALANCE, etc.
+        Must check errorMsg and orderId to determine real success.
+        """
         success = response.get("success", False)
         error_msg = response.get("errorMsg", "")
+        order_id = response.get("orderId")
+
+        # 任务14: success=True with errorMsg means order was rejected
+        # CLOB API uses success=True for server-side processing success,
+        # but the order itself can fail (see docs/developers/CLOB/orders/create-order.md)
+        if success and error_msg:
+            success = False
 
         return cls(
             success=success,
-            order_id=response.get("orderId"),
+            order_id=order_id,
             status=response.get("status"),
-            message=error_msg if not success else "Order placed successfully",
+            message=error_msg if error_msg else "Order placed successfully",
             data=response
         )
 
@@ -367,10 +379,18 @@ class TradingBot:
                 order_type,
             )
 
-            logger.info(
-                f"Order placed: {side} {adjusted_size}@{adjusted_price} "
-                f"(token: {token_id[:16]}...)"
-            )
+            # 任务14: Log full response for debugging order failures
+            error_msg = response.get("errorMsg", "")
+            if error_msg:
+                logger.warning(
+                    f"Order response has errorMsg: {error_msg} "
+                    f"(success={response.get('success')}, orderId={response.get('orderId')})"
+                )
+            else:
+                logger.info(
+                    f"Order placed: {side} {adjusted_size}@{adjusted_price} "
+                    f"(token: {token_id[:16]}...)"
+                )
 
             return OrderResult.from_response(response)
 

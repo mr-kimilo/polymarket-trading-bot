@@ -145,6 +145,13 @@ class ReboundConfig:
     # 当启用时，只有在order_schedule表中有对应计划的时间段内才会执行交易
     order_schedule_enabled: bool = False
 
+    # 任务8: 严格模式优化配置
+    # 当没有order_schedule计划时，使用更严格的入场条件
+    weekday_strict_enabled: bool = True  # 是否启用严格模式优化
+    weekday_strict_threshold: float = 0.25  # 严格模式UP/DOWN阈值 (原0.30)
+    weekday_strict_btc_max: float = 30.0  # 严格模式BTC变化限制 (原50.0)
+    weekday_size_multiplier: float = 0.5  # 严格模式仓位乘数 (原1.0)
+
 
 @dataclass 
 class PriceRecord:
@@ -331,12 +338,88 @@ class ReboundStrategy:
         # 即使订单提前关闭，也继续记录趋势直到15分钟结束
         # side -> {"db_id": int, "entry_price": float}
         self._closed_positions_for_trend: Dict[str, Dict] = {}
-
+        
+        # 任务8: 缓存原始配置用于周末恢复
+        self._original_threshold = config.price_drop_threshold
+        self._original_btc_max = config.btc_drop_max
+        self._original_size = config.size
+        
         # Auto-claim
         self._last_claim_check: float = 0
         self._auto_claimer = None
         if config.auto_claim_enabled and not config.simulation_mode:
             self._init_auto_claimer()
+    
+    # ==================== 任务8: 严格模式优化 ====================
+    # 修改: 不再基于星期，而是基于order_schedule
+    # 如果当前时间没有order_schedule计划，则使用严格模式
+    
+    def _is_weekday_strict(self) -> bool:
+        """检查是否应使用严格模式（没有order_schedule时使用严格模式）"""
+        # 如果未启用严格模式优化，直接返回False
+        if not self.config.weekday_strict_enabled:
+            return False
+        
+        # 检查order_schedule：如果有计划则放松，没有计划则严格
+        env = "sim" if self.config.simulation_mode else "prod"
+        has_schedule = self.db.check_should_trade(env, self.config.strategy_type)
+        
+        # 有schedule → 放松模式(False)，无schedule → 严格模式(True)
+        return not has_schedule
+    
+    def _get_effective_threshold(self) -> float:
+        """获取当前生效的入场阈值"""
+        # 只有策略1启用周期优化
+        if self.config.strategy_type != "1":
+            return self._original_threshold
+        if not self.config.weekday_strict_enabled:
+            return self._original_threshold
+        if self._is_weekday_strict():
+            return self.config.weekday_strict_threshold
+        return self._original_threshold
+    
+    def _get_effective_btc_max(self) -> float:
+        """获取当前生效的BTC变化限制"""
+        # 只有策略1启用周期优化
+        if self.config.strategy_type != "1":
+            return self._original_btc_max
+        if not self.config.weekday_strict_enabled:
+            return self._original_btc_max
+        if self._is_weekday_strict():
+            return self.config.weekday_strict_btc_max
+        return self._original_btc_max
+    
+    def _get_effective_size(self) -> float:
+        """获取当前生效的仓位大小"""
+        # 只有策略1启用周期优化
+        if self.config.strategy_type != "1":
+            return self._original_size
+        if not self.config.weekday_strict_enabled:
+            return self._original_size
+        if self._is_weekday_strict():
+            return self._original_size * self.config.weekday_size_multiplier
+        return self._original_size
+    
+    def _get_weekday_info(self) -> Dict:
+        """获取当前严格模式信息"""
+        from datetime import datetime
+        weekday = datetime.now().weekday()
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        
+        # 检查order_schedule状态
+        env = "sim" if self.config.simulation_mode else "prod"
+        has_schedule = self.db.check_should_trade(env, self.config.strategy_type)
+        
+        is_strict = self._is_weekday_strict() and self.config.strategy_type == "1"
+        return {
+            "weekday": weekday,
+            "weekday_name": weekday_names[weekday],
+            "is_strict_mode": is_strict,
+            "has_schedule": has_schedule,
+            "effective_threshold": self._get_effective_threshold(),
+            "effective_btc_max": self._get_effective_btc_max(),
+            "effective_size": self._get_effective_size(),
+        }
     
     def _init_auto_claimer(self) -> None:
         """初始化AutoClaimer"""
@@ -449,8 +532,11 @@ class ReboundStrategy:
         start_price = window_records[0].price
         current_price = window_records[-1].price
         
+        # 任务8: 使用有效阈值（周一到周四更严格）
+        effective_threshold = self._get_effective_threshold()
+        
         # 检查是否跌破阈值
-        if current_price < self.config.price_drop_threshold:
+        if current_price < effective_threshold:
             drop = start_price - current_price
             if drop > 0:  # 确实是下跌
                 return (start_price, current_price, drop)
@@ -710,7 +796,9 @@ class ReboundStrategy:
             return True  # 无法获取价格时不限制
         
         drop = self.btc_price_start - self.btc_price_current
-        return drop <= self.config.btc_drop_max
+        # 任务8: 使用有效BTC限制（周一到周四更严格）
+        effective_btc_max = self._get_effective_btc_max()
+        return drop <= effective_btc_max
     
     async def _execute_trade(self, side: str, trigger_info: Dict) -> bool:
         """
@@ -733,8 +821,20 @@ class ReboundStrategy:
             self.log(f"No token ID for {side}", "error")
             return False
         
-        # 计算交易数量
-        size = self.config.size / current_price
+        # 任务8: 计算交易数量（周一到周四使用调整后的仓位）
+        effective_size = self._get_effective_size()
+        size = effective_size / current_price
+        
+        # 任务8: 输出当前模式提示
+        weekday_info = self._get_weekday_info()
+        if weekday_info["is_strict_mode"]:
+            self.log(
+                f"[策略1] {weekday_info['weekday_name']} 严格模式: "
+                f"阈值={weekday_info['effective_threshold']:.0%}, "
+                f"BTC≤${weekday_info['effective_btc_max']:.0f}, "
+                f"仓位=${effective_size:.1f}",
+                "info"
+            )
         
         # 任务64: 确定env值
         env = "sim" if self.config.simulation_mode else "prod"
@@ -1340,7 +1440,18 @@ class ReboundStrategy:
         up_price = self.prices.get_current_price("up")
         down_price = self.prices.get_current_price("down")
         lines.append(f"UP: {Colors.GREEN}{up_price:.4f}{Colors.RESET} | DOWN: {Colors.RED}{down_price:.4f}{Colors.RESET}")
-        lines.append(f"Drop Threshold: < {self.config.price_drop_threshold:.2f}")
+        
+        # 任务8: 显示有效阈值（根据星期调整）
+        weekday_info = self._get_weekday_info()
+        if weekday_info["is_strict_mode"]:
+            lines.append(
+                f"Drop Threshold: < {weekday_info['effective_threshold']:.2f} "
+                f"({Colors.YELLOW}{weekday_info['weekday_name']} 严格模式{Colors.RESET}, "
+                f"BTC≤${weekday_info['effective_btc_max']:.0f}, "
+                f"仓位${weekday_info['effective_size']:.1f})"
+            )
+        else:
+            lines.append(f"Drop Threshold: < {self.config.price_drop_threshold:.2f}")
         lines.append("")
         
         # 持仓信息

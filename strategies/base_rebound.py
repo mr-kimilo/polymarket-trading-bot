@@ -105,6 +105,13 @@ class BaseReboundConfig:
     
     # 直接卖出开关
     direct_sell_enabled: bool = False
+    
+    # 周一到周四优化配置 (任务8)
+    # 周一到周四使用更严格的入场条件和更小的仓位
+    weekday_strict_enabled: bool = True  # 是否启用周期优化
+    weekday_strict_threshold: float = 0.25  # 周一到周四UP/DOWN阈值 (原0.30)
+    weekday_strict_btc_max: float = 30.0  # 周一到周四BTC变化限制 (原50.0)
+    weekday_size_multiplier: float = 0.5  # 周一到周四仓位乘数 (原1.0)
 
 
 @dataclass 

@@ -3,10 +3,12 @@ Strategy Implementations - 具体策略实现 (任务57重构)
 
 包含三种策略：
 - Strategy1: A段反弹策略 (UP/DOWN<30%, BTC下跌<$50)
+  - 任务8优化: 周一到周四更严格 (UP/DOWN<25%, BTC下跌<$30, 仓位50%)
 - Strategy2: C段反弹策略 (UP/DOWN<15%, BTC下跌<$30)
 - Strategy3: 动态止盈止损策略 (带P&L管理)
 """
 
+from datetime import datetime
 from typing import Dict, Tuple, Optional
 from .base_rebound import BaseReboundStrategy, BaseReboundConfig, PriceRecord
 
@@ -20,6 +22,11 @@ class Strategy1(BaseReboundStrategy):
     - UP/DOWN价格跌破30%
     - BTC价格下跌不超过$50
     
+    严格模式优化 - 没有order_schedule时更严格：
+    - UP/DOWN价格跌码25% (厐30%)
+    - BTC价格下跌不超过$30 (厐50$)
+    - 仓位降佐50%
+    
     持仓：持有到15分钟结束
     """
     
@@ -32,6 +39,48 @@ class Strategy1(BaseReboundStrategy):
         # 策略1持有到周期结束，不使用止盈止损
         config.profit_and_loss_enabled = False
         super().__init__(bot, config)
+        
+        # 缓存原始配置用于周末恢复
+        self._original_threshold = config.price_drop_threshold
+        self._original_btc_max = config.btc_drop_max
+        self._original_size = config.size
+    
+    def _is_weekday_strict(self) -> bool:
+        """检查是否应使用严格模式（没有order_schedule时使用严格模式）"""
+        # 如果未启用严格模式优化，直接返回False
+        if not self.config.weekday_strict_enabled:
+            return False
+        
+        # 检查order_schedule：如果有计划则放松，没有计划则严格
+        env = "sim" if self.config.simulation_mode else "prod"
+        has_schedule = self.db.check_should_trade(env, self.config.strategy_type)
+        
+        # 有schedule → 放松模式(False)，无schedule → 严格模式(True)
+        return not has_schedule
+    
+    def _get_effective_threshold(self) -> float:
+        """获取当前生效的入场阈值"""
+        if not self.config.weekday_strict_enabled:
+            return self._original_threshold
+        if self._is_weekday_strict():
+            return self.config.weekday_strict_threshold
+        return self._original_threshold
+    
+    def _get_effective_btc_max(self) -> float:
+        """获取当前生效的BTC变化限制"""
+        if not self.config.weekday_strict_enabled:
+            return self._original_btc_max
+        if self._is_weekday_strict():
+            return self.config.weekday_strict_btc_max
+        return self._original_btc_max
+    
+    def _get_effective_size(self) -> float:
+        """获取当前生效的仓位大小"""
+        if not self.config.weekday_strict_enabled:
+            return self._original_size
+        if self._is_weekday_strict():
+            return self._original_size * self.config.weekday_size_multiplier
+        return self._original_size
     
     def should_enter_trade(self, side: str, segment: str) -> Tuple[bool, Dict]:
         """策略1入场条件"""
@@ -51,8 +100,11 @@ class Strategy1(BaseReboundStrategy):
         if current_price <= 0:
             return False, {}
         
+        # 获取当前生效的阈值（根据星期调整）
+        effective_threshold = self._get_effective_threshold()
+        
         # 检查价格是否跌破阈值
-        if current_price >= self.config.price_drop_threshold:
+        if current_price >= effective_threshold:
             return False, {}
         
         # 检查BTC条件
@@ -63,11 +115,22 @@ class Strategy1(BaseReboundStrategy):
         if not self._detect_rapid_drop(side):
             return False, {}
         
+        # 构建触发信息
+        is_strict = self._is_weekday_strict() and self.config.weekday_strict_enabled
+        weekday_name = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][datetime.now().weekday()]
+        
         trigger_info = {
             "current_price": current_price,
-            "threshold": self.config.price_drop_threshold,
+            "threshold": effective_threshold,
             "btc_drop": (self.btc_price_start or 0) - (self.btc_price_current or 0),
+            "effective_size": self._get_effective_size(),
+            "weekday": weekday_name,
+            "strict_mode": is_strict,
         }
+        
+        # 输出当前模式提示
+        if is_strict:
+            print(f"[策略1] {weekday_name} 严格模式: 阈值={effective_threshold:.0%}, BTC≤${self._get_effective_btc_max():.0f}, 仓位={self._get_effective_size():.1f}")
         
         return True, trigger_info
     
@@ -81,7 +144,8 @@ class Strategy1(BaseReboundStrategy):
         if self.btc_price_start is None or self.btc_price_current is None:
             return True
         drop = self.btc_price_start - self.btc_price_current
-        return drop <= self.config.btc_drop_max
+        effective_btc_max = self._get_effective_btc_max()
+        return drop <= effective_btc_max
     
     def _detect_rapid_drop(self, side: str) -> bool:
         """检测快速下跌"""
@@ -100,8 +164,11 @@ class Strategy1(BaseReboundStrategy):
         max_price = max(window_prices)
         current_price = history[-1].price
         
+        # 获取当前生效的阈值
+        effective_threshold = self._get_effective_threshold()
+        
         # 检查是否从高价快速下跌
-        if max_price > self.config.price_drop_threshold and current_price < self.config.price_drop_threshold:
+        if max_price > effective_threshold and current_price < effective_threshold:
             return True
         
         return False

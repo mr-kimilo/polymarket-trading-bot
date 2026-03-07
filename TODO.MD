@@ -74,6 +74,45 @@ run_rebound_live.bat
 ## 原问题（已解决）
 `run_rebound_live.bat` 启动后在 "Database table created" 输出后卡住不动。
 
+✅ 任务7.阅读trading-rules.md并整理需求，确定买入卖出点，止盈止损点，苹果这个策略的ROI和风险。
+- 分析文档: [docs/trading_rules_analysis.md](docs/trading_rules_analysis.md)
+- 包含3个策略: 回弹策略1(A段)、回弹策略2(C段)、1小时趋势策略3
+- 买入/卖出点、止盈止损条件已详细整理
+- ROI估算: 策略1 +66.5%, 策略2 +100%, 策略3 +2.5%
+- 风险评级: 策略1中高风险、策略2极高风险、策略3中低风险
+
+✅ 任务8.为什么策略1在周一到周四晚上的数据总是亏，周五和周六晚上才有盈利？我怎么才能在周一到周四的晚上也有周五周六的盈利。
+- 分析脚本: [scripts/analyze_weekday_pnl.py](scripts/analyze_weekday_pnl.py)
+- 分析报告: [docs/task8_weekday_analysis.md](docs/task8_weekday_analysis.md)
+- **数据发现**:
+  - 周一到周四: 33单, 胜率27.3%, 总盈亏-11.31
+  - 周五周六: 40单, 胜率32.5%, 总盈亏+16.00
+  - 周六表现最好(34.5%), 周二最差(10%)
+- **关键差异**: 
+  - 周一到周四亏损订单BTC下跌平均-49点，说明趋势明确时策略判断错误
+  - 周六BTC振幅最小(0.28%)，波动更温和适合回弹策略
+- **✅ 已实现优化**:
+  1. ✅ 没有order_schedule时入场条件更严格(UP/DOWN<25%, BTC变化<$30)
+  2. ✅ 没有order_schedule时仓位降低50%
+  3. ✅ 基于order_schedule而非星期几判断严格模式
+  4. 周二表现极差，考虑禁用（待实现）
+  5. 增加连亏保护机制（待实现）
+- **配置**（config.yaml）:
+  ```yaml
+  weekday_strict:
+    enabled: true
+    threshold: 0.25  # 严格模式UP/DOWN阈值
+    btc_max: 30.0    # 严格模式BTC限制
+    size_multiplier: 0.5  # 严格模式仓位乘数
+  ```
+- **逻辑说明**:
+  - 有order_schedule计划 → 放松模式(threshold=0.30, btc_max=50, size=100%)
+  - 无order_schedule计划 → 严格模式(threshold=0.25, btc_max=30, size=50%)
+- **代码变更**:
+  - `strategies/rebound.py`: `_is_weekday_strict()` 改为检查order_schedule
+  - `strategies/strategy_impl.py`: Strategy1同步修改
+  - 显示屏幕会提示当前是否为"严格模式"及是否有schedule
+
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：
 - 每次启动都会执行 `CREATE TABLE IF NOT EXISTS`、`ALTER TABLE ADD COLUMN`、`CREATE INDEX` 等操作

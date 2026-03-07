@@ -205,6 +205,34 @@ def load_profit_and_loss_from_config() -> dict:
     return defaults
 
 
+def load_weekday_strict_from_config() -> dict:
+    """从config.yaml加载weekday_strict配置 (任务8)"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    defaults = {
+        "enabled": True,
+        "threshold": 0.25,
+        "btc_max": 30.0,
+        "size_multiplier": 0.5
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            ws = config.get("weekday_strict", {})
+            
+            return {
+                "enabled": ws.get("enabled", defaults["enabled"]),
+                "threshold": ws.get("threshold", defaults["threshold"]),
+                "btc_max": ws.get("btc_max", defaults["btc_max"]),
+                "size_multiplier": ws.get("size_multiplier", defaults["size_multiplier"])
+            }
+        except Exception as e:
+            print(f"{Colors.YELLOW}Warning: Failed to load weekday_strict config: {e}{Colors.RESET}")
+    
+    return defaults
+
+
 def main():
     """Main entry point."""
     # 首先从config.yaml加载strategy.type
@@ -390,6 +418,9 @@ def main():
     # Load profit_and_loss settings from config (任务61)
     pnl_config = load_profit_and_loss_from_config()
     
+    # Load weekday_strict settings from config (任务8)
+    weekday_config = load_weekday_strict_from_config()
+    
     # Load order_schedule setting from config (任务68)
     order_schedule_enabled = load_order_schedule_from_config()
     
@@ -414,7 +445,12 @@ def main():
         strategy3_use_gtc_order=pnl_config["strategy3_use_gtc_order"],
         strategy3_sell_discount=pnl_config["strategy3_sell_discount"],
         # 任务68: Order Schedule配置
-        order_schedule_enabled=order_schedule_enabled
+        order_schedule_enabled=order_schedule_enabled,
+        # 任务8: 周一到周四优化配置
+        weekday_strict_enabled=weekday_config["enabled"],
+        weekday_strict_threshold=weekday_config["threshold"],
+        weekday_strict_btc_max=weekday_config["btc_max"],
+        weekday_size_multiplier=weekday_config["size_multiplier"]
     )
 
     # Create and run strategy

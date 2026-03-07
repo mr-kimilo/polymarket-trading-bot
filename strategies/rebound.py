@@ -810,7 +810,7 @@ class ReboundStrategy:
                 "debug"
             )
     
-    def _get_rebound_trend_summary(self, side: str) -> str:
+    def _get_rebound_trend_summary(self, side: str) -> Optional[str]:
         """
         获取反弹趋势记录的摘要字符串
         
@@ -819,10 +819,11 @@ class ReboundStrategy:
             
         Returns:
             逗号分隔的反弹百分比字符串，例如: "0.15, 0.25, 0.35, 0.30, 0.28"
+            如果没有记录，返回 None（避免覆盖数据库中已有的趋势数据）
         """
         records = self._rebound_trend_records.get(side, [])
         if not records:
-            return ""
+            return None
         
         # 格式化为百分比字符串（保留2位小数）
         pct_strings = [f"{r:.2f}" for r in records]
@@ -1062,13 +1063,15 @@ class ReboundStrategy:
                     pnl_percent = (exit_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
                     
                     if db_id:
+                        rebound_trend = self._get_rebound_trend_summary(side)
                         self.db.update_rebound_order_result(
                             order_id=db_id,
                             exit_price=exit_price,
                             exit_btc_price=self.btc_price_current,
                             pnl=pnl,
                             pnl_percent=pnl_percent,
-                            status=OrderStatus.CLOSED.value
+                            status=OrderStatus.CLOSED.value,
+                            rebound_trend=rebound_trend
                         )
                     
                     color = Colors.GREEN if pnl >= 0 else Colors.RED
@@ -1128,13 +1131,15 @@ class ReboundStrategy:
                     pnl_percent = (current_price - entry_price) / entry_price * 100
 
                     if db_id:
+                        rebound_trend = self._get_rebound_trend_summary(side)
                         self.db.update_rebound_order_result(
                             order_id=db_id,
                             exit_price=current_price,
                             exit_btc_price=self.btc_price_current,
                             pnl=pnl,
                             pnl_percent=pnl_percent,
-                            status=OrderStatus.CLOSED.value
+                            status=OrderStatus.CLOSED.value,
+                            rebound_trend=rebound_trend
                         )
 
                     mode_str = "SIMULATED"

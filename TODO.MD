@@ -120,6 +120,20 @@ run_rebound_live.bat
 - **修复**:
   - 回填975条历史NULL记录（task 64之前的订单）
   - 修复 `test_database.py` 测试订单缺少 `strategy_type` 和 `env` 字段
+任务10. ✅ 检查rebound_orders的rebound_trend，在模拟和真实环境是否能正常保存。
+- **发现的问题** (4处Bug):
+  1. `_get_rebound_trend_summary()` 无记录时返回 `""` 而非 `None`，导致覆盖已保存的趋势数据
+  2. `update_rebound_order_result()` 无条件执行 `SET rebound_trend = %s`，即使参数为 `None` 也会将DB中已有的趋势覆盖为NULL
+  3. `_close_all_positions()` 模拟模式缺少 `rebound_trend` 参数 → 存入NULL
+  4. `direct_sell_all_positions()` 模拟模式缺少 `rebound_trend` 参数 → 存入NULL
+  5. **竞态条件**: `_execute_close_live()` 异步任务在 `_reset_for_new_period()` 清空 `_rebound_trend_records` 之后才执行，导致获取不到趋势数据
+- **修复内容**:
+  - `_get_rebound_trend_summary()` 改为返回 `Optional[str]`，无记录时返回 `None`
+  - `update_rebound_order_result()` 改为条件SQL：仅当 `rebound_trend is not None` 时才在SET子句中包含该字段，避免覆盖已有数据
+  - `_close_all_positions()` 模拟模式：传入 `rebound_trend=self._get_rebound_trend_summary(side)`
+  - `direct_sell_all_positions()` 模拟模式：传入 `rebound_trend=self._get_rebound_trend_summary(side)`
+  - 竞态条件通过上述1+2的组合修复：`_execute_close_live()` 获取空趋势时返回 `None`，`update_rebound_order_result()` 不覆盖已有数据
+- **新增测试**: `tests/unit/test_task10_rebound_trend_save.py` (12个测试，全部通过)
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

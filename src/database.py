@@ -324,8 +324,12 @@ class Database:
         if not self._conn:
             logger.warning("Database not connected. Order not updated.")
             return False
-            
-        update_sql = """
+        
+        # Conditionally include rebound_trend only when provided.
+        # This prevents overwriting existing trend data when the caller
+        # doesn't have fresh trend records (e.g. after _rebound_trend_records reset).
+        if rebound_trend is not None:
+            update_sql = """
         UPDATE rebound_orders
         SET exit_price = %s,
             exit_btc_price = %s,
@@ -336,12 +340,23 @@ class Database:
             rebound_trend = %s
         WHERE id = %s;
         """
-        
+            params = (exit_price, exit_btc_price, pnl, pnl_percent, status, rebound_trend, order_id)
+        else:
+            update_sql = """
+        UPDATE rebound_orders
+        SET exit_price = %s,
+            exit_btc_price = %s,
+            exit_at = CURRENT_TIMESTAMP,
+            pnl = %s,
+            pnl_percent = %s,
+            status = %s
+        WHERE id = %s;
+        """
+            params = (exit_price, exit_btc_price, pnl, pnl_percent, status, order_id)
+            
         try:
             with self._conn.cursor() as cur:
-                cur.execute(update_sql, (
-                    exit_price, exit_btc_price, pnl, pnl_percent, status, rebound_trend, order_id
-                ))
+                cur.execute(update_sql, params)
                 logger.info(f"Updated rebound order {order_id}: pnl={pnl}, status={status}")
                 return True
         except Exception as e:

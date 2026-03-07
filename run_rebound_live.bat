@@ -31,7 +31,7 @@ echo ============================================================
 echo.
 echo  交易参数 Trading Parameters:
 echo    币种 Coin: BTC
-echo    金额 Size: $3.00 USDC per trade
+echo    金额 Size: $2.00 USDC per trade
 echo    模式 Mode: LIVE (真实交易)
 echo.
 echo  请确认以下环境变量已正确配置:
@@ -57,7 +57,7 @@ echo [%date% %time%] 启动 Rebound 真实交易策略...
 echo.
 
 REM 真实交易: --live 启用, --size 2 每笔2美元
-python apps/run_rebound.py --coin BTC --size 3 --live
+python apps/run_rebound.py --coin BTC --size 2 --live
 
 echo.
 echo [%date% %time%] 策略已停止。

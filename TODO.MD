@@ -144,6 +144,28 @@ run_rebound_live.bat
   - `strategies/rebound.py` 的 `_render_status()` 方法
 - **功能1**: 统计数据按 `strategy_type` 过滤，显示格式: `7-Day Stats (Strategy {type}, {mode}):`
 - **功能2**: 在LIVE模式下显示账户USDC余额（使用 `AutoClaimer.get_usdc_balance()`）
+✅ 任务13.生产上，有单子止盈止损失败，查找原因，检查poly market api，是不是没有保持心跳？还是挂单已经错过了最佳时期？找到原因，并按照止盈止损操作。
+- **根本原因分析**:
+  1. **GTC订单提交≠成交**: `result.success`只表示订单被CLOB接受，不代表已成交。GTC限价卖单可能挂在订单簿上永远不成交
+  2. **无成交验证**: 下GTC卖单后，未轮询`get_order()`确认是否实际成交（`size_matched`）
+  3. **未取消过期订单**: GTC订单未成交时，从未取消并以更低价格重新挂单
+  4. **DB使用触发价格而非成交价格**: PnL使用止盈止损触发时的价格，而非实际成交价
+  5. WebSocket心跳机制正常（20秒ping，10秒pong超时，5秒自动重连）
+- **修复内容**:
+  - 新增 `_wait_for_order_fill()` 方法：GTC订单提交后轮询`get_order()`验证成交（15秒超时，2秒间隔）
+  - 修改 `_execute_close_live()`：
+    - 订单状态为`matched`时立即确认成交
+    - GTC订单为`live`状态时轮询确认成交
+    - 未成交时取消订单并以更激进价格重试
+    - 每次重试递增折扣（+2%/次，最大15%），确保最终能成交
+    - 使用实际成交价格更新数据库PnL
+    - 未成交时DB状态标记为`sell_failed`而非`closed`
+  - FOK订单保持原有逻辑（success即成交）
+- **新增测试**: `tests/unit/test_task13_tp_sl_fill_verify.py` (13个测试，全部通过)
+  - `TestWaitForOrderFill`: 6个测试（matched/not-found/timeout/full-match/delayed/api-error）
+  - `TestExecuteCloseLiveWithFillVerification`: 7个测试（即时成交/轮询成交/取消重试/递增折扣/失败状态/FOK/折扣上限）
+
+任务14.策略3，是prod为啥没有下单成功？只是插入了数据库，并更新了数据。
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

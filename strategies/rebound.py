@@ -1180,8 +1180,66 @@ class ReboundStrategy:
         self._active_positions.clear()
         self._current_period_orders.clear()
 
+    async def _wait_for_order_fill(self, order_id: str, timeout: float = 15.0, poll_interval: float = 2.0) -> Dict:
+        """Poll order status until filled, cancelled, or timeout.
+        
+        Args:
+            order_id: CLOB order ID
+            timeout: Max seconds to wait for fill
+            poll_interval: Seconds between status checks
+            
+        Returns:
+            Dict with keys: filled (bool), size_matched (float), status (str)
+        """
+        from asyncio import sleep
+        
+        elapsed = 0.0
+        while elapsed < timeout:
+            try:
+                order_data = await self.bot.get_order(order_id)
+                if not order_data:
+                    # Order not found - may have been fully matched and removed
+                    self.log(f"[FILL] Order {order_id} not found (likely fully matched)", "info")
+                    return {"filled": True, "size_matched": 0, "status": "matched"}
+                
+                status = order_data.get("status", "")
+                size_matched_str = order_data.get("size_matched", "0")
+                original_size_str = order_data.get("original_size", "0")
+                
+                size_matched = float(size_matched_str) if size_matched_str else 0
+                original_size = float(original_size_str) if original_size_str else 0
+                
+                self.log(
+                    f"[FILL] Order {order_id}: status={status}, "
+                    f"matched={size_matched}/{original_size}",
+                    "info"
+                )
+                
+                # Fully matched
+                if status == "matched" or (original_size > 0 and size_matched >= original_size):
+                    return {"filled": True, "size_matched": size_matched, "status": status}
+                
+                # If status is not "live", stop polling (e.g. cancelled)
+                if status not in ("live", "delayed", "unmatched", "matched"):
+                    return {"filled": False, "size_matched": size_matched, "status": status}
+                    
+            except Exception as e:
+                self.log(f"[FILL] Error checking order {order_id}: {e}", "warning")
+            
+            await sleep(poll_interval)
+            elapsed += poll_interval
+        
+        # Timeout - order still open
+        return {"filled": False, "size_matched": 0, "status": "timeout"}
+
     async def _execute_close_live(self, side: str, exit_price: float, pos_info: Dict, db_id: Optional[int], reason: str = "") -> None:
-        """Execute a LIVE SELL to close a position and update the DB afterwards."""
+        """Execute a LIVE SELL to close a position and update the DB afterwards.
+        
+        任务13修复: 
+        - GTC订单提交后验证成交状态（轮询get_order）
+        - 未成交时取消订单并以更激进的价格重试
+        - 使用实际成交价格更新数据库PnL
+        """
         # Ensure bot exists
         if not self.bot:
             self.log("Error: Bot not initialized for LIVE closing", "error")
@@ -1191,41 +1249,42 @@ class ReboundStrategy:
         size = pos_info.get("size", 0)
         entry_price = pos_info.get("entry_price", 0)
 
-
-        # 市价卖出逻辑：优先用盘口买一价（best_bid），无则降级为0.01
         from asyncio import sleep
         max_retries = 10
         retry = 0
+        order_filled = False
+        actual_sell_price = exit_price  # 默认用触发价格，成交后用实际价格
         
         # 任务61: 获取配置参数
         use_gtc = getattr(self.config, 'strategy3_use_gtc_order', True)
         sell_discount = getattr(self.config, 'strategy3_sell_discount', 0.03)
         order_type = 'GTC' if use_gtc else 'FOK'
         
-        # 任务59: 增加详细的调试日志
         self.log(f"[DEBUG] _execute_close_live started for {side.upper()}, token_id={token_id}, size={size}", "info")
         self.log(f"[DEBUG] Order config: use_gtc={use_gtc}, sell_discount={sell_discount}, order_type={order_type}", "info")
         
         while retry < max_retries:
-            # 用更安全的方式获取卖出价格
+            # 每次重试都重新获取最新盘口价格
             sell_price = await self.get_safe_sell_price(token_id, side)
             
-            # 任务59: 记录原始返回的价格
             self.log(f"[DEBUG] get_safe_sell_price returned: {sell_price} (type: {type(sell_price).__name__})", "info")
 
-            # 任务58补充: 确保价格在有效范围内 (0 < price < 1)
             if sell_price <= 0 or sell_price >= 1:
                 self.log(f"[WARN] Invalid sell_price {sell_price}, using fallback 0.01", "warning")
                 sell_price = 0.01
             
-            # 任务61: 应用卖出价格折扣（使用GTC挂单时，降低价格以确保成交）
-            if use_gtc and sell_discount > 0:
-                original_price = sell_price
-                sell_price = round(sell_price * (1 - sell_discount), 2)
-                sell_price = max(0.01, sell_price)  # 确保最低价格
-                self.log(f"[DEBUG] Applied sell discount: {original_price:.4f} -> {sell_price:.4f} (-{sell_discount*100:.0f}%)", "info")
+            # 任务13: 每次重试递增折扣，使卖出价格更激进
+            # retry 0: base discount (3%), retry 1: 5%, retry 2: 7%, ...
+            effective_discount = sell_discount + (retry * 0.02)
+            effective_discount = min(effective_discount, 0.15)  # 最大15%折扣
             
-            # Ensure size precision matches maker/taker rules (2 decimals for taker_amount)
+            if use_gtc and effective_discount > 0:
+                original_price = sell_price
+                sell_price = round(sell_price * (1 - effective_discount), 2)
+                sell_price = max(0.01, sell_price)
+                self.log(f"[DEBUG] Applied sell discount (retry={retry}): {original_price:.4f} -> {sell_price:.4f} (-{effective_discount*100:.0f}%)", "info")
+            
+            # Ensure size precision
             try:
                 rounded_size = round(float(size), 2)
                 if rounded_size <= 0:
@@ -1237,17 +1296,14 @@ class ReboundStrategy:
 
             self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry}, type={order_type})", "trade")
 
-
             try:
                 # 获取当前市场真实费率
                 fee_rate_bps = 1000
                 if hasattr(self, 'market') and self.market and self.market.current_market:
-                    # Polymarket 15m市场通常只有一个fee，直接取raw数据
                     raw = self.market.current_market.raw if hasattr(self.market.current_market, 'raw') else None
                     if raw and 'takerFeeBps' in raw:
                         fee_rate_bps = int(raw['takerFeeBps'])
-                # side参数用当前订单方向
-                # 任务61: 使用配置的订单类型 (GTC或FOK)
+
                 result = await self.bot.place_order(
                     token_id=token_id,
                     price=sell_price,
@@ -1259,39 +1315,76 @@ class ReboundStrategy:
 
                 if result.success:
                     self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id}, type={order_type})", "success")
-                    break
+                    
+                    # 任务13: 如果订单状态为 matched，说明立即成交
+                    if result.status == "matched":
+                        self.log(f"[LIVE] Order immediately matched for {side.upper()}", "success")
+                        actual_sell_price = sell_price
+                        order_filled = True
+                        break
+                    
+                    # 任务13: GTC订单需要轮询确认成交状态
+                    if use_gtc and result.order_id:
+                        fill_result = await self._wait_for_order_fill(
+                            result.order_id, timeout=15.0, poll_interval=2.0
+                        )
+                        
+                        if fill_result["filled"]:
+                            self.log(f"[LIVE] GTC order filled for {side.upper()} (matched={fill_result['size_matched']})", "success")
+                            actual_sell_price = sell_price
+                            order_filled = True
+                            break
+                        else:
+                            # 订单未成交，取消后重试
+                            self.log(
+                                f"[LIVE] GTC order NOT filled for {side.upper()} "
+                                f"(status={fill_result['status']}), cancelling and retrying with lower price",
+                                "warning"
+                            )
+                            try:
+                                await self.bot.cancel_order(result.order_id)
+                                self.log(f"[LIVE] Cancelled unfilled order {result.order_id}", "info")
+                            except Exception as ce:
+                                self.log(f"[WARN] Failed to cancel order {result.order_id}: {ce}", "warning")
+                    else:
+                        # FOK 模式 或 无 order_id: success 即成交
+                        actual_sell_price = sell_price
+                        order_filled = True
+                        break
                 else:
                     self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")
             except Exception as e:
                 self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
 
             retry += 1
-            await sleep(2)  # 等待2秒后重试，盘口可能有变化
+            await sleep(2)
 
-        if retry == max_retries:
-            self.log(f"[LIVE] 市价卖出重试{max_retries}次仍未成功，建议人工干预！", "error")
+        if not order_filled:
+            self.log(f"[LIVE] ⚠️ 卖出重试{max_retries}次仍未成交，建议人工干预！side={side.upper()}, token={token_id}", "error")
 
-        # Update DB with exit info regardless of order success (use provided exit_price)
-        if exit_price and entry_price and db_id:
-            pnl = (exit_price - entry_price) * size
-            pnl_percent = (exit_price - entry_price) / entry_price * 100
+        # 任务13: 使用实际成交价格更新数据库（而非触发时的价格）
+        final_exit_price = actual_sell_price if order_filled else exit_price
+        if entry_price and db_id:
+            pnl = (final_exit_price - entry_price) * size
+            pnl_percent = (final_exit_price - entry_price) / entry_price * 100
             
-            # 获取反弹趋势记录 (任务56)
             rebound_trend = self._get_rebound_trend_summary(side)
             
+            status = OrderStatus.CLOSED.value if order_filled else "sell_failed"
             self.db.update_rebound_order_result(
                 order_id=db_id,
-                exit_price=exit_price,
+                exit_price=final_exit_price,
                 exit_btc_price=self.btc_price_current,
                 pnl=pnl,
                 pnl_percent=pnl_percent,
-                status=OrderStatus.CLOSED.value,
+                status=status,
                 rebound_trend=rebound_trend
             )
             color = Colors.GREEN if pnl >= 0 else Colors.RED
             trend_info = f" [Trend: {rebound_trend}]" if rebound_trend else ""
+            fill_info = "" if order_filled else f" {Colors.RED}[UNFILLED]{Colors.RESET}"
             self.log(
-                f"[REAL] Closed {side.upper()} @ {exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}{trend_info}",
+                f"[REAL] Closed {side.upper()} @ {final_exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}{trend_info}{fill_info}",
                 "success" if pnl >= 0 else "warning"
             )
 

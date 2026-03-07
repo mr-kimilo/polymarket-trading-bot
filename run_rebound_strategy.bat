@@ -6,12 +6,11 @@ REM
 REM This script runs the Rebound trading strategy in SIMULATION mode.
 REM No real orders will be placed.
 REM 
-REM Strategy:
+REM Strategy (V2 mode - uses config.yaml strategy.type):
 REM   - Monitors BTC 15-minute markets
-REM   - Triggers in A segment (15-10 min) when:
-REM     * UP or DOWN price drops rapidly below 0.30
-REM     * BTC price drop is within $50
-REM   - Holds until period ends
+REM   - Dynamic parameters loaded from strategy3_rules DB table
+REM   - Triggers based on configured segments (stage_buy from DB)
+REM   - Take-profit/stop-loss per dynamic DB rules
 REM   - Records all trades to database (simulated)
 REM 
 REM Usage:
@@ -49,9 +48,8 @@ echo    Strategy Configuration:
 echo      - Coin: BTC
 echo      - Mode: SIMULATION (no real orders)
 echo      - Size: $10 USDC per trade
-echo      - Drop Threshold: below 0.30
-echo      - BTC Drop Max: $50
-echo      - Active Segments: A (15-10 min)
+echo      - Strategy type: from config.yaml (V2 dynamic params)
+echo      - Parameters: loaded from strategy3_rules DB table
 echo    
 echo    Press Ctrl+C to stop
 echo ============================================================================
@@ -68,8 +66,8 @@ if %RESTART_COUNT% GTR 1 (
     timeout /t 5 /nobreak > nul
 )
 
-REM Run Rebound Strategy in simulation mode (strategy-type 1: Basic mode)
-.venv\Scripts\python.exe apps/run_rebound.py --coin BTC --strategy-type 1 --simulation --size 10
+REM Run Rebound Strategy in simulation mode (strategy type from config.yaml)
+.venv\Scripts\python.exe apps/run_rebound.py --coin BTC --simulation --size 10
 
 set EXIT_CODE=%ERRORLEVEL%
 

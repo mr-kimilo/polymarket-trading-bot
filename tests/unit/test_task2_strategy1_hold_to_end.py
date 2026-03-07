@@ -154,6 +154,8 @@ class TestEvaluatePositionsGuard:
         from strategies.rebound import ReboundStrategy, ReboundConfig
 
         mock_db_instance = MagicMock()
+        # V2动态参数: 返回None让策略回退到config默认值
+        mock_db_instance.get_active_strategy3_rule.return_value = None
         mock_db.return_value = mock_db_instance
 
         config = ReboundConfig(strategy_type="3", simulation_mode=True)

@@ -344,6 +344,13 @@ class ReboundStrategy:
         self._original_btc_max = config.btc_drop_max
         self._original_size = config.size
         
+        # V2动态参数 (策略3从strategy3_rules表加载参数)
+        self._dynamic_params: Optional[Dict] = None
+        self._last_params_check: float = 0
+        self._params_check_interval: float = 60.0  # 每分钟检查一次
+        if config.strategy_type == "3":
+            self._load_dynamic_params()
+        
         # Auto-claim
         self._last_claim_check: float = 0
         self._auto_claimer = None
@@ -420,6 +427,65 @@ class ReboundStrategy:
             "effective_btc_max": self._get_effective_btc_max(),
             "effective_size": self._get_effective_size(),
         }
+    
+    # ==================== V2动态参数 (策略3) ====================
+    
+    def _load_dynamic_params(self) -> bool:
+        """从strategy3_rules表加载动态参数 (v2特性)
+        
+        加载: stage_buy, price_down_percentage, price_down, take_profit, stop_loss
+        """
+        try:
+            env = "production" if not self.config.simulation_mode else "simulate"
+            params = self.db.get_active_strategy3_rule(env=env)
+            if params:
+                self._dynamic_params = params
+                
+                # 更新order_segments (stage_buy)
+                stage_buy = params.get("stage_buy", "A")
+                allowed = self._get_allowed_order_segments()
+                self.config.order_segments = allowed
+                
+                self.log(
+                    f"[V2] Loaded dynamic params: stage_buy={stage_buy}, "
+                    f"order_segments={allowed}, "
+                    f"threshold={params.get('price_down_percentage')}, "
+                    f"btc_drop={params.get('price_down')}, "
+                    f"take_profit={params.get('take_profit')}, "
+                    f"stop_loss={params.get('stop_loss')}",
+                    "info"
+                )
+                return True
+            return False
+        except Exception as e:
+            self.log(f"[V2] Failed to load dynamic params: {e}", "warning")
+            return False
+    
+    def _get_dynamic_param(self, param_name: str, default_value):
+        """获取动态参数或默认值"""
+        if self._dynamic_params:
+            return self._dynamic_params.get(param_name, default_value)
+        return default_value
+    
+    def _get_allowed_order_segments(self) -> List[str]:
+        """从数据库stage_buy字段获取允许下单的阶段列表"""
+        stage_buy = self._get_dynamic_param("stage_buy", "A")
+        if isinstance(stage_buy, str):
+            segments = [s.strip().upper() for s in stage_buy.split(",")]
+            valid = [s for s in segments if s in ["A", "B", "C"]]
+            return valid if valid else ["A"]
+        if isinstance(stage_buy, list):
+            return [s.upper() for s in stage_buy if s.upper() in ["A", "B", "C"]]
+        return ["A"]
+    
+    def _check_and_reload_dynamic_params(self) -> None:
+        """周期性重新加载动态参数 (每60秒)"""
+        if self.config.strategy_type != "3":
+            return
+        now = time.time()
+        if now - self._last_params_check >= self._params_check_interval:
+            self._last_params_check = now
+            self._load_dynamic_params()
     
     def _init_auto_claimer(self) -> None:
         """初始化AutoClaimer"""
@@ -506,12 +572,13 @@ class ReboundStrategy:
             if r.timestamp >= cutoff
         ]
     
-    def _detect_rapid_drop(self, side: str) -> Optional[Tuple[float, float, float]]:
+    def _detect_rapid_drop(self, side: str, threshold_override: Optional[float] = None) -> Optional[Tuple[float, float, float]]:
         """
         检测是否发生快速下跌
         
         Args:
             side: "up" 或 "down"
+            threshold_override: V2动态参数覆盖值
             
         Returns:
             如果检测到快速下跌，返回 (起始价格, 当前价格, 下跌幅度)
@@ -533,7 +600,10 @@ class ReboundStrategy:
         current_price = window_records[-1].price
         
         # 任务8: 使用有效阈值（周一到周四更严格）
-        effective_threshold = self._get_effective_threshold()
+        if threshold_override is not None:
+            effective_threshold = threshold_override
+        else:
+            effective_threshold = self._get_effective_threshold()
         
         # 检查是否跌破阈值
         if current_price < effective_threshold:
@@ -785,9 +855,12 @@ class ReboundStrategy:
                     "debug"
                 )
     
-    def _check_btc_condition(self) -> bool:
+    def _check_btc_condition(self, btc_max_override: Optional[float] = None) -> bool:
         """
         检查BTC价格条件
+        
+        Args:
+            btc_max_override: V2动态参数覆盖值
         
         Returns:
             如果BTC下跌在允许范围内返回True
@@ -796,6 +869,8 @@ class ReboundStrategy:
             return True  # 无法获取价格时不限制
         
         drop = self.btc_price_start - self.btc_price_current
+        if btc_max_override is not None:
+            return drop <= btc_max_override
         # 任务8: 使用有效BTC限制（周一到周四更严格）
         effective_btc_max = self._get_effective_btc_max()
         return drop <= effective_btc_max
@@ -1246,10 +1321,15 @@ class ReboundStrategy:
         
         策略1和策略2持有到周期结束，不进行止盈止损评估。
         仅策略3使用动态止盈止损逻辑。
+        V2: 从strategy3_rules表动态加载TP/SL参数。
         """
         # 策略1和策略2不使用P&L评估，直接持有到周期结束
         if self.config.strategy_type != "3":
             return
+
+        # V2: 使用动态参数
+        take_profit_base = self._get_dynamic_param("take_profit", self.config.strategy3_take_profit_base)
+        stop_loss_bc = self._get_dynamic_param("stop_loss", self.config.strategy3_stop_loss_stage_bc)
 
         # For each active position, update peak price and evaluate rules
         for side, pos in list(self._active_positions.items()):
@@ -1270,10 +1350,10 @@ class ReboundStrategy:
             # check take-profit base eligibility
             # profit_percent as decimal (e.g., 0.8 means +80%)
             profit_percent = (current_price - entry) / entry
-            if not pos.get("_tp_eligible") and profit_percent >= self.config.strategy3_take_profit_base:
+            if not pos.get("_tp_eligible") and profit_percent >= take_profit_base:
                 # mark eligible when reached base TP
                 pos["_tp_eligible"] = True
-                self.log(f"Position {side.upper()} reached strategy3_take_profit_base ({profit_percent:.2%}), eligible for TP", "info")
+                self.log(f"Position {side.upper()} reached take_profit_base ({profit_percent:.2%}), eligible for TP", "info")
 
             # if eligible, wait for pullback from peak by reduce_loss fraction
             if pos.get("_tp_eligible"):
@@ -1296,8 +1376,8 @@ class ReboundStrategy:
                 self._close_position(side, current_price, reason="strategy3_stop_loss_stage_a")
                 continue
             
-            # B和C段: 常规止损 (20%)
-            if segment in ["B", "C"] and loss_frac >= self.config.strategy3_stop_loss_stage_bc:
+            # B和C段: 常规止损 - V2使用动态参数
+            if segment in ["B", "C"] and loss_frac >= stop_loss_bc:
                 self.log(f"Stage {segment} stop-loss for {side.upper()}: loss={loss_frac:.2%}", "warning")
                 self._close_position(side, current_price, reason=f"strategy3_stop_loss_stage_{segment.lower()}")
     
@@ -1348,8 +1428,12 @@ class ReboundStrategy:
         if segment not in self.config.active_segments:
             return
         
-        # Only place new orders in configured order_segments
-        if segment not in self.config.order_segments:
+        # V2: 策略3使用动态参数的order_segments
+        if self.config.strategy_type == "3":
+            allowed_segments = self._get_allowed_order_segments()
+            if segment not in allowed_segments:
+                return
+        elif segment not in self.config.order_segments:
             return
 
         # 检查是否已有持仓
@@ -1372,12 +1456,23 @@ class ReboundStrategy:
                 return
         
         # 检查BTC条件
-        if not self._check_btc_condition():
-            return
+        # V2: 策略3使用动态btc_drop_max
+        if self.config.strategy_type == "3":
+            btc_drop_max = self._get_dynamic_param("price_down", self.config.btc_drop_max)
+            if not self._check_btc_condition(btc_max_override=btc_drop_max):
+                return
+        else:
+            if not self._check_btc_condition():
+                return
         
         # 检测UP和DOWN的快速下跌
+        # V2: 策略3使用动态threshold
+        v2_threshold = None
+        if self.config.strategy_type == "3":
+            v2_threshold = self._get_dynamic_param("price_down_percentage", self.config.price_drop_threshold)
+        
         for side in ["up", "down"]:
-            drop_info = self._detect_rapid_drop(side)
+            drop_info = self._detect_rapid_drop(side, threshold_override=v2_threshold)
             if drop_info:
                 start_price, current_price, drop = drop_info
                 
@@ -1507,7 +1602,10 @@ class ReboundStrategy:
         self.running = True
         
         mode_str = "SIMULATION" if self.config.simulation_mode else "LIVE"
-        self.log(f"Starting Rebound Strategy in {mode_str} mode for {self.config.coin}", "info")
+        v2_str = " [V2]" if self.config.strategy_type == "3" else ""
+        self.log(f"Starting Rebound Strategy{v2_str} in {mode_str} mode for {self.config.coin}", "info")
+        if self.config.strategy_type == "3":
+            self.log(f"[V2] Dynamic params: {self._dynamic_params is not None}", "info")
         
         # 注册回调
         @self.market.on_book_update
@@ -1542,6 +1640,9 @@ class ReboundStrategy:
             while self.running:
                 # 更新BTC价格
                 self._update_btc_price()
+                
+                # V2: 周期性重新加载动态参数 (策略3)
+                self._check_and_reload_dynamic_params()
                 
                 # 检查触发条件
                 await self._check_trigger_conditions()

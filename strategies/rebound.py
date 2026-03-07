@@ -494,13 +494,13 @@ class ReboundStrategy:
             import os
             import yaml
             
-            safe_address = os.environ.get("POLY_SAFE_ADDRESS", "")
             private_key = os.environ.get("POLY_PRIVATE_KEY", "")
             
-            # 从config.yaml加载active_builder的凭证
+            # 从config.yaml加载active_builder的凭证和对应的safe_address
             builder_api_key = ""
             builder_api_secret = ""
             builder_api_passphrase = ""
+            safe_address = ""
             try:
                 with open("config.yaml", "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
@@ -511,8 +511,19 @@ class ReboundStrategy:
                 builder_api_secret = builder_data.get("api_secret", "")
                 builder_api_passphrase = builder_data.get("api_passphrase", "")
                 rpc_url = cfg.get("rpc_url", "https://polygon.drpc.org")
+                
+                # 根据active_builder选择对应的safe_address
+                if active_builder == "builder2":
+                    safe_address = cfg.get("safe_address2", "")
+                else:
+                    safe_address = cfg.get("safe_address", "")
+                
+                # 如果config.yaml中没有，尝试从环境变量获取
+                if not safe_address:
+                    safe_address = os.environ.get("POLY_SAFE_ADDRESS", "")
             except Exception:
                 rpc_url = "https://polygon.drpc.org"
+                safe_address = os.environ.get("POLY_SAFE_ADDRESS", "")
             
             if safe_address:
                 self._auto_claimer = AutoClaimer(
@@ -524,7 +535,9 @@ class ReboundStrategy:
                     builder_api_secret=builder_api_secret,
                     builder_api_passphrase=builder_api_passphrase,
                 )
-                self.log(f"AutoClaimer initialized (min balance: ${self.config.auto_claim_min_balance}, builder: {active_builder})", "info")
+                # 显示简短地址用于确认
+                short_addr = f"{safe_address[:6]}...{safe_address[-4:]}" if len(safe_address) > 10 else safe_address
+                self.log(f"AutoClaimer initialized (builder: {active_builder}, addr: {short_addr})", "info")
             else:
                 self.log("AutoClaimer disabled: POLY_SAFE_ADDRESS not set", "warning")
         except Exception as e:

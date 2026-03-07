@@ -134,6 +134,10 @@ run_rebound_live.bat
   - `direct_sell_all_positions()` 模拟模式：传入 `rebound_trend=self._get_rebound_trend_summary(side)`
   - 竞态条件通过上述1+2的组合修复：`_execute_close_live()` 获取空趋势时返回 `None`，`update_rebound_order_result()` 不覆盖已有数据
 - **新增测试**: `tests/unit/test_task10_rebound_trend_save.py` (12个测试，全部通过)
+✅ 任务11.在交易界面显示策略type
+- **修改文件**: `strategies/rebound.py` 的 `_render_status()` 方法
+- **显示格式**: `Rebound Strategy：{strategy_type} | {coin} | {Connected} | Mode: {mode}`
+- **示例**: `Rebound Strategy：1 | BTC | Connected | Mode: LIVE`
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

@@ -1541,7 +1541,7 @@ class ReboundStrategy:
         
         lines.append(f"{Colors.BOLD}{'='*80}{Colors.RESET}")
         lines.append(
-            f"{Colors.CYAN}Rebound Strategy{Colors.RESET} | {self.config.coin} | "
+            f"{Colors.CYAN}Rebound Strategy：{self.config.strategy_type}{Colors.RESET} | {self.config.coin} | "
             f"{ws_status} | Mode: {mode_str}"
         )
         lines.append(f"Countdown: {countdown} | Segment: {segment}")

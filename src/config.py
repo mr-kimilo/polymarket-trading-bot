@@ -221,9 +221,11 @@ class Config:
                 tx_type=relayer_data.get("tx_type", config.relayer.tx_type),
             )
 
-        # Builder config
-        if "builder" in data:
-            builder_data = data["builder"]
+        # Builder config - support active_builder selection
+        active_builder = data.get("active_builder", "builder")
+        builder_key = active_builder if active_builder in data else "builder"
+        if builder_key in data:
+            builder_data = data[builder_key]
             config.builder = BuilderConfig(
                 api_key=builder_data.get("api_key", ""),
                 api_secret=builder_data.get("api_secret", ""),

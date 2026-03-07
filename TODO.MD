@@ -112,6 +112,14 @@ run_rebound_live.bat
   - `strategies/rebound.py`: `_is_weekday_strict()` 改为检查order_schedule
   - `strategies/strategy_impl.py`: Strategy1同步修改
   - 显示屏幕会提示当前是否为"严格模式"及是否有schedule
+✅ 任务9.检查rebound_orders的strategy_type在模拟和真实环境都保存了。
+- **检查结果**:
+  - 代码路径: `_execute_trade()` 对sim和live使用同一代码路径，均设置 `strategy_type` 和 `env`
+  - prod订单: 374条，全部有 `strategy_type=1, env=prod` ✅
+  - sim订单: 689条，全部有 `strategy_type=1, env=sim` ✅
+- **修复**:
+  - 回填975条历史NULL记录（task 64之前的订单）
+  - 修复 `test_database.py` 测试订单缺少 `strategy_type` 和 `env` 字段
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

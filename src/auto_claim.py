@@ -136,11 +136,13 @@ class AutoClaimer:
             self._init_relay_client()
     
     def _load_config_credentials(self):
-        """从config.yaml加载builder凭证"""
+        """从config.yaml加载builder凭证 (支持active_builder选择)"""
         try:
-            with open("config.yaml", "r") as f:
+            with open("config.yaml", "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
-                builder = config.get("builder", {})
+                active_builder = config.get("active_builder", "builder")
+                builder_key = active_builder if active_builder in config else "builder"
+                builder = config.get(builder_key, {})
                 self.builder_api_key = self.builder_api_key or builder.get("api_key", "")
                 self.builder_api_secret = self.builder_api_secret or builder.get("api_secret", "")
                 self.builder_api_passphrase = self.builder_api_passphrase or builder.get("api_passphrase", "")

@@ -492,17 +492,39 @@ class ReboundStrategy:
         try:
             from src.auto_claim import AutoClaimer
             import os
+            import yaml
             
             safe_address = os.environ.get("POLY_SAFE_ADDRESS", "")
             private_key = os.environ.get("POLY_PRIVATE_KEY", "")
+            
+            # 从config.yaml加载active_builder的凭证
+            builder_api_key = ""
+            builder_api_secret = ""
+            builder_api_passphrase = ""
+            try:
+                with open("config.yaml", "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                active_builder = cfg.get("active_builder", "builder")
+                builder_key = active_builder if active_builder in cfg else "builder"
+                builder_data = cfg.get(builder_key, {})
+                builder_api_key = builder_data.get("api_key", "")
+                builder_api_secret = builder_data.get("api_secret", "")
+                builder_api_passphrase = builder_data.get("api_passphrase", "")
+                rpc_url = cfg.get("rpc_url", "https://polygon.drpc.org")
+            except Exception:
+                rpc_url = "https://polygon.drpc.org"
             
             if safe_address:
                 self._auto_claimer = AutoClaimer(
                     safe_address=safe_address,
                     private_key=private_key,
-                    min_balance=self.config.auto_claim_min_balance
+                    min_balance=self.config.auto_claim_min_balance,
+                    rpc_url=rpc_url,
+                    builder_api_key=builder_api_key,
+                    builder_api_secret=builder_api_secret,
+                    builder_api_passphrase=builder_api_passphrase,
                 )
-                self.log(f"AutoClaimer initialized (min balance: ${self.config.auto_claim_min_balance})", "info")
+                self.log(f"AutoClaimer initialized (min balance: ${self.config.auto_claim_min_balance}, builder: {active_builder})", "info")
             else:
                 self.log("AutoClaimer disabled: POLY_SAFE_ADDRESS not set", "warning")
         except Exception as e:

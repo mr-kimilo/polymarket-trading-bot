@@ -67,7 +67,9 @@ def test_database():
         period_start=datetime.now(),
         status=OrderStatus.SIMULATED.value,
         is_simulated=True,
-        market_slug="test-market-slug"
+        market_slug="test-market-slug",
+        strategy_type="1",
+        env="sim"
     )
     
     order_id = db.create_rebound_order(test_order)

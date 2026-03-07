@@ -470,7 +470,8 @@ class Database:
         self, 
         coin: Optional[str] = None,
         is_simulated: Optional[bool] = None,
-        days: int = 30
+        days: int = 30,
+        strategy_type: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         获取订单统计信息
@@ -479,6 +480,7 @@ class Database:
             coin: 可选，筛选特定币种
             is_simulated: 可选，筛选模拟/真实订单
             days: 统计最近多少天
+            strategy_type: 可选，筛选策略类型 ("1", "2", "3")
             
         Returns:
             统计信息字典
@@ -496,6 +498,9 @@ class Database:
         if is_simulated is not None:
             conditions.append("is_simulated = %s")
             params.append(is_simulated)
+        if strategy_type:
+            conditions.append("strategy_type = %s")
+            params.append(strategy_type)
             
         where_clause = " AND ".join(conditions)
         

@@ -138,6 +138,12 @@ run_rebound_live.bat
 - **修改文件**: `strategies/rebound.py` 的 `_render_status()` 方法
 - **显示格式**: `Rebound Strategy：{strategy_type} | {coin} | {Connected} | Mode: {mode}`
 - **示例**: `Rebound Strategy：1 | BTC | Connected | Mode: LIVE`
+✅ 任务12.我希望在运行策略3的时候，显示的胜率也是策略3的而不是其他策略的，同时展示当前账号的余额
+- **修改文件**: 
+  - `src/database.py` 的 `get_rebound_orders_stats()` 方法添加 `strategy_type` 参数
+  - `strategies/rebound.py` 的 `_render_status()` 方法
+- **功能1**: 统计数据按 `strategy_type` 过滤，显示格式: `7-Day Stats (Strategy {type}, {mode}):`
+- **功能2**: 在LIVE模式下显示账户USDC余额（使用 `AutoClaimer.get_usdc_balance()`）
 
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：

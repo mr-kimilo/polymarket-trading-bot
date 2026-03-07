@@ -1598,11 +1598,12 @@ class ReboundStrategy:
             stats = self.db.get_rebound_orders_stats(
                 coin=self.config.coin, 
                 is_simulated=self.config.simulation_mode,
-                days=7
+                days=7,
+                strategy_type=self.config.strategy_type
             )
             if stats:
                 lines.append("")
-                lines.append(f"{Colors.BOLD}7-Day Stats ({mode_str}):{Colors.RESET}")
+                lines.append(f"{Colors.BOLD}7-Day Stats (Strategy {self.config.strategy_type}, {mode_str}):{Colors.RESET}")
                 lines.append(
                     f"  Orders: {stats.get('total_orders', 0)} | "
                     f"Closed: {stats.get('closed_orders', 0)} | "
@@ -1612,6 +1613,16 @@ class ReboundStrategy:
                     f"  Total PnL: ${stats.get('total_pnl', 0):.2f} | "
                     f"Avg PnL: ${stats.get('avg_pnl', 0):.2f}"
                 )
+        
+        # 账户余额（仅真实模式且有AutoClaimer时显示）
+        if not self.config.simulation_mode and self._auto_claimer:
+            try:
+                usdc_balance = self._auto_claimer.get_usdc_balance()
+                lines.append("")
+                lines.append(f"{Colors.BOLD}Account Balance:{Colors.RESET}")
+                lines.append(f"  USDC: {Colors.GREEN}${usdc_balance:.2f}{Colors.RESET}")
+            except Exception:
+                pass  # 获取余额失败时静默忽略
         
         # 日志
         if self._log_buffer.messages:

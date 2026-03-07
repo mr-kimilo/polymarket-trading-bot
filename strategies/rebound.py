@@ -164,13 +164,14 @@ class ReboundStrategy:
 
     async def get_safe_sell_price(self, token_id: str, side: str) -> float:
         """
-        获取最安全的卖出价格。
+        获取最安全的卖出价格（任务15: 以市场价格卖出）。
         
-        优先级：
-        1. CLOB midpoint (最稳定)
-        2. Last trade price
-        3. Orderbook best bid
-        4. 兜底价格 0.01
+        优先级 (任务15修改: 优先使用orderbook best bid实现市价卖出):
+        1. Orderbook best bid (买方最高价，最接近市价卖出)
+        2. CLOB midpoint
+        3. Last trade price
+        4. Local orderbook best bid
+        5. 兜底价格 0.01
         
         Args:
             token_id: Market token ID
@@ -196,57 +197,51 @@ class ReboundStrategy:
         
         sell_price = None
         
-        # 任务59: 记录调试信息
         self.log(f"[DEBUG] get_safe_sell_price: token_id={token_id}, side={side}, tick_size={tick_size}", "info")
         
-        # 1. Try midpoint first (most stable)
+        # 1. 任务15: 优先使用orderbook best bid（市价卖出）
         try:
-            midpoint = clob_client.get_midpoint(token_id)
-            self.log(f"[DEBUG] get_midpoint returned: {midpoint} (type: {type(midpoint).__name__ if midpoint else 'None'})", "info")
-            if midpoint and 0 < midpoint < 1:
-                # Slightly below midpoint to increase fill probability
-                sell_price = midpoint - float(tick_size)
-                self.log(f"[INFO] Using midpoint price: {midpoint} -> {sell_price}", "info")
+            ob_data = clob_client.get_order_book(token_id)
+            bids = ob_data.get("bids", [])
+            self.log(f"[DEBUG] orderbook bids count: {len(bids)}, first 3: {bids[:3] if bids else 'empty'}", "info")
+            if bids:
+                valid_bids = [float(b.get("price", 0)) for b in bids if float(b.get("price", 0)) > 0.01]
+                if valid_bids:
+                    best_bid = max(valid_bids)
+                    if best_bid > 0.01:
+                        sell_price = best_bid
+                        self.log(f"[INFO] Using orderbook best bid (market sell): {sell_price}", "info")
         except Exception as e:
-            self.log(f"[WARN] get_midpoint failed: {e}", "warning")
+            self.log(f"[WARN] get_order_book failed: {e}", "warning")
         
-        # 2. Try last trade price
+        # 2. Fallback: CLOB midpoint
+        if not sell_price or sell_price <= 0 or sell_price >= 1:
+            try:
+                midpoint = clob_client.get_midpoint(token_id)
+                if midpoint and 0 < midpoint < 1:
+                    sell_price = midpoint - float(tick_size)
+                    self.log(f"[INFO] Fallback to midpoint: {midpoint} -> {sell_price}", "info")
+            except Exception as e:
+                self.log(f"[WARN] get_midpoint failed: {e}", "warning")
+        
+        # 3. Fallback: Last trade price
         if not sell_price or sell_price <= 0 or sell_price >= 1:
             try:
                 last_price = clob_client.get_last_trade_price(token_id)
                 if last_price and 0 < last_price < 1:
                     sell_price = last_price - float(tick_size)
-                    self.log(f"[INFO] Using last trade price: {last_price} -> {sell_price}", "info")
+                    self.log(f"[INFO] Fallback to last trade price: {last_price} -> {sell_price}", "info")
             except Exception as e:
                 self.log(f"[WARN] get_last_trade_price failed: {e}", "warning")
         
-        # 3. Try orderbook best bid
-        if not sell_price or sell_price <= 0 or sell_price >= 1:
-            try:
-                ob_data = clob_client.get_order_book(token_id)
-                bids = ob_data.get("bids", [])
-                self.log(f"[DEBUG] orderbook bids count: {len(bids)}, first 3: {bids[:3] if bids else 'empty'}", "info")
-                if bids:
-                    # Get best bid (highest bid price)
-                    valid_bids = [float(b.get("price", 0)) for b in bids if float(b.get("price", 0)) > 0.01]
-                    self.log(f"[DEBUG] valid_bids (>0.01): {valid_bids[:5] if valid_bids else 'none'}", "info")
-                    if valid_bids:
-                        best_bid = max(valid_bids)
-                        if best_bid and best_bid > 0.01:
-                            sell_price = best_bid
-                            self.log(f"[INFO] Using orderbook best bid: {sell_price}", "info")
-            except Exception as e:
-                self.log(f"[WARN] get_order_book failed: {e}", "warning")
-        
-        # 4. Fallback to local orderbook if available
+        # 4. Fallback: Local orderbook
         if not sell_price or sell_price <= 0 or sell_price >= 1:
             self.log("[DEBUG] Trying local orderbook fallback...", "info")
             if hasattr(self, 'market') and self.market:
                 orderbook = self.market.get_orderbook(side)
-                self.log(f"[DEBUG] local orderbook: {orderbook.best_bid if orderbook else 'None'}", "info")
                 if orderbook and orderbook.best_bid > 0.01:
                     sell_price = orderbook.best_bid
-                    self.log(f"[INFO] Using local orderbook best bid: {sell_price}", "info")
+                    self.log(f"[INFO] Fallback to local orderbook best bid: {sell_price}", "info")
         
         # 5. Final fallback
         if not sell_price or sell_price <= 0:
@@ -254,21 +249,116 @@ class ReboundStrategy:
             self.log(f"[WARN] Using fallback price: {sell_price}", "warning")
         
         # Adjust to tick size and ensure bounds
-        self.log(f"[DEBUG] Before tick adjustment: sell_price={sell_price}", "info")
         sell_price_dec = Decimal(str(sell_price))
         adjusted = (sell_price_dec // tick_size) * tick_size
         adjusted = float(adjusted)
-        self.log(f"[DEBUG] After tick adjustment: adjusted={adjusted}", "info")
         
-        # Ensure price is within valid bounds
         if adjusted <= 0:
-            self.log(f"[DEBUG] adjusted <= 0, setting to tick_size={tick_size}", "info")
             adjusted = float(tick_size)
         if adjusted >= 1:
-            self.log(f"[DEBUG] adjusted >= 1, setting to 1-tick_size={1.0 - float(tick_size)}", "info")
             adjusted = 1.0 - float(tick_size)
         
         self.log(f"[DEBUG] Final sell price: {adjusted}", "info")
+        return adjusted
+
+    async def get_safe_buy_price(self, token_id: str, side: str) -> float:
+        """
+        获取最安全的买入价格（任务15: 以市场价格买入）。
+        
+        优先级 (使用orderbook best ask实现市价买入):
+        1. Orderbook best ask (卖方最低价，最接近市价买入)
+        2. CLOB midpoint + tick_size
+        3. Last trade price + tick_size
+        4. Local orderbook best ask
+        5. 当前WebSocket价格 + 0.02 (兜底)
+        
+        Args:
+            token_id: Market token ID
+            side: Position side ("up" or "down")
+            
+        Returns:
+            Safe buy price (0 < price < 1)
+        """
+        from decimal import Decimal
+        
+        clob_client = getattr(self.bot, 'clob_client', None)
+        if not clob_client:
+            self.log("[WARN] get_safe_buy_price: No clob_client available", "warning")
+            current = self.prices.get_current_price(side)
+            return min(current + 0.02, 0.99) if current > 0 else 0.50
+        
+        try:
+            tick_size_str = clob_client.get_tick_size(token_id)
+            tick_size = Decimal(tick_size_str)
+        except Exception:
+            tick_size_str = "0.01"
+            tick_size = Decimal("0.01")
+        
+        buy_price = None
+        
+        self.log(f"[DEBUG] get_safe_buy_price: token_id={token_id}, side={side}, tick_size={tick_size}", "info")
+        
+        # 1. 任务15: 优先使用orderbook best ask（市价买入）
+        try:
+            ob_data = clob_client.get_order_book(token_id)
+            asks = ob_data.get("asks", [])
+            self.log(f"[DEBUG] orderbook asks count: {len(asks)}, first 3: {asks[:3] if asks else 'empty'}", "info")
+            if asks:
+                valid_asks = [float(a.get("price", 0)) for a in asks if 0 < float(a.get("price", 0)) < 1]
+                if valid_asks:
+                    best_ask = min(valid_asks)
+                    if 0 < best_ask < 1:
+                        buy_price = best_ask
+                        self.log(f"[INFO] Using orderbook best ask (market buy): {buy_price}", "info")
+        except Exception as e:
+            self.log(f"[WARN] get_order_book failed: {e}", "warning")
+        
+        # 2. Fallback: CLOB midpoint + tick_size
+        if not buy_price or buy_price <= 0 or buy_price >= 1:
+            try:
+                midpoint = clob_client.get_midpoint(token_id)
+                if midpoint and 0 < midpoint < 1:
+                    buy_price = midpoint + float(tick_size)
+                    self.log(f"[INFO] Fallback to midpoint: {midpoint} -> {buy_price}", "info")
+            except Exception as e:
+                self.log(f"[WARN] get_midpoint failed: {e}", "warning")
+        
+        # 3. Fallback: Last trade price + tick_size
+        if not buy_price or buy_price <= 0 or buy_price >= 1:
+            try:
+                last_price = clob_client.get_last_trade_price(token_id)
+                if last_price and 0 < last_price < 1:
+                    buy_price = last_price + float(tick_size)
+                    self.log(f"[INFO] Fallback to last trade price: {last_price} -> {buy_price}", "info")
+            except Exception as e:
+                self.log(f"[WARN] get_last_trade_price failed: {e}", "warning")
+        
+        # 4. Fallback: Local orderbook
+        if not buy_price or buy_price <= 0 or buy_price >= 1:
+            if hasattr(self, 'market') and self.market:
+                orderbook = self.market.get_orderbook(side)
+                if orderbook and hasattr(orderbook, 'best_ask') and orderbook.best_ask > 0:
+                    buy_price = orderbook.best_ask
+                    self.log(f"[INFO] Fallback to local orderbook best ask: {buy_price}", "info")
+        
+        # 5. Final fallback
+        if not buy_price or buy_price <= 0 or buy_price >= 1:
+            current = self.prices.get_current_price(side)
+            buy_price = min(current + 0.02, 0.99) if current > 0 else 0.50
+            self.log(f"[WARN] Using fallback price: {buy_price}", "warning")
+        
+        # Adjust to tick size and ensure bounds
+        buy_price_dec = Decimal(str(buy_price))
+        # Round UP to nearest tick (more aggressive for buy)
+        adjusted = ((buy_price_dec + tick_size - Decimal("0.0001")) // tick_size) * tick_size
+        adjusted = float(adjusted)
+        
+        if adjusted <= 0:
+            adjusted = float(tick_size)
+        if adjusted >= 1:
+            adjusted = 1.0 - float(tick_size)
+        
+        self.log(f"[DEBUG] Final buy price: {adjusted}", "info")
         return adjusted
     """
     Rebound反弹交易策略
@@ -979,19 +1069,21 @@ class ReboundStrategy:
                 self.log("Error: Bot not initialized for LIVE trading", "error")
                 return False
             
-            # 任务14: BUY下单 + 成交验证 + 重试
-            # GTC订单提交成功≠成交，需要轮询验证
+            # 任务14+15: BUY下单 + 成交验证 + 重试
+            # 任务15: 使用市场价格（best ask）买入，而不是固定溢价
             buy_filled = False
             max_buy_retries = 3
-            base_premium = 0.02  # 初始高于mid_price的溢价
-            premium_increment = 0.02  # 每次重试增加溢价
+            premium_increment = 0.02  # 每次重试在市场价基础上增加溢价
             
             for attempt in range(max_buy_retries + 1):
-                premium = base_premium + attempt * premium_increment
-                buy_price = min(current_price + premium, 0.99)
+                # 任务15: 每次重试都获取最新的市场价格
+                buy_price = await self.get_safe_buy_price(token_id, side)
+                # 重试时在市场价基础上额外加溢价
+                if attempt > 0:
+                    buy_price = min(buy_price + attempt * premium_increment, 0.99)
                 
                 self.log(
-                    f"[LIVE] Placing BUY {side.upper()} @ {buy_price:.4f}, "
+                    f"[LIVE] Placing BUY {side.upper()} @ {buy_price:.4f} (market price), "
                     f"size={size:.2f} (attempt {attempt + 1}/{max_buy_retries + 1})",
                     "trade"
                 )
@@ -1034,9 +1126,9 @@ class ReboundStrategy:
                     self.log(f"[LIVE] Cancel failed: {e}", "warning")
                 
                 if attempt < max_buy_retries:
-                    next_premium = base_premium + (attempt + 1) * premium_increment
+                    next_premium = (attempt + 1) * premium_increment
                     self.log(
-                        f"[LIVE] Retrying with higher price (+{next_premium:.2f})",
+                        f"[LIVE] Retrying with market price + {next_premium:.2f}",
                         "info"
                     )
             
@@ -1736,6 +1828,14 @@ class ReboundStrategy:
             )
         else:
             lines.append(f"Drop Threshold: < {self.config.price_drop_threshold:.2f}")
+        
+        # 任务15: 显示order_schedule状态（所有策略类型）
+        if self.config.order_schedule_enabled:
+            schedule_status = weekday_info.get("has_schedule", False)
+            if schedule_status:
+                lines.append(f"Schedule: {Colors.GREEN}✓ 在计划交易时间内{Colors.RESET} (Strategy {self.config.strategy_type})")
+            else:
+                lines.append(f"Schedule: {Colors.RED}✗ 不在计划交易时间内{Colors.RESET} (Strategy {self.config.strategy_type})")
         lines.append("")
         
         # 持仓信息

@@ -56,6 +56,8 @@ def _make_strategy(simulation_mode: bool = False, strategy_type: str = "3"):
     strategy.prices = MagicMock()
     strategy.prices.get_current_price = MagicMock(return_value=0.30)
     strategy._get_rebound_trend_summary = MagicMock(return_value=None)
+    # Task15: mock get_safe_buy_price to return current price (market price)
+    strategy.get_safe_buy_price = AsyncMock(return_value=0.30)
     return strategy
 
 
@@ -149,8 +151,8 @@ class TestBuyFillVerification:
         # Extract buy prices from place_order calls
         prices = [call.kwargs["price"] for call in strategy.bot.place_order.call_args_list]
 
-        # Prices should be: 0.32, 0.34, 0.36, 0.38
-        # (current_price=0.30 + premium where premium = 0.02 + attempt * 0.02)
+        # Task15: Prices should be: 0.30, 0.32, 0.34, 0.36
+        # (market_price=0.30 from get_safe_buy_price, retries add attempt * 0.02)
         assert len(prices) == 4
         for i in range(1, len(prices)):
             assert prices[i] > prices[i - 1], \
@@ -161,6 +163,8 @@ class TestBuyFillVerification:
         """Buy price should never exceed 0.99 even with premium."""
         strategy = _make_strategy()
         strategy.prices.get_current_price.return_value = 0.98
+        # Task15: mock market price at 0.98
+        strategy.get_safe_buy_price = AsyncMock(return_value=0.98)
 
         strategy.bot.place_order.return_value = _make_order_result()
         strategy._wait_for_order_fill = AsyncMock(
@@ -204,12 +208,12 @@ class TestBuyFillVerification:
         trigger_info = {"segment": "A", "up_price": 0.30, "down_price": 0.70, "btc_drop": 10}
         await strategy._execute_trade("up", trigger_info)
 
-        # buy_price = min(0.30 + 0.02, 0.99) = 0.32
+        # Task15: buy_price = get_safe_buy_price() = 0.30 (market price, no increment on first attempt)
         saved_order = strategy.db.create_rebound_order.call_args[0][0]
-        assert saved_order.entry_price == 0.32  # fill price, not mid_price 0.30
+        assert saved_order.entry_price == 0.30  # fill price from market
 
         # Active position entry price should also be the fill price
-        assert strategy._active_positions["up"]["entry_price"] == 0.32
+        assert strategy._active_positions["up"]["entry_price"] == 0.30
 
     @pytest.mark.asyncio
     async def test_simulation_mode_skips_fill_verification(self):
@@ -231,6 +235,8 @@ class TestBuyFillVerification:
         """Strategy 3 P&L peak price should use actual fill price."""
         strategy = _make_strategy(strategy_type="3")
         strategy.prices.get_current_price.return_value = 0.25
+        # Task15: mock market price for this test
+        strategy.get_safe_buy_price = AsyncMock(return_value=0.25)
 
         strategy.bot.place_order.return_value = _make_order_result()
         strategy._wait_for_order_fill = AsyncMock(
@@ -240,8 +246,8 @@ class TestBuyFillVerification:
         trigger_info = {"segment": "A", "up_price": 0.25, "down_price": 0.75, "btc_drop": 10}
         await strategy._execute_trade("up", trigger_info)
 
-        # buy_price = min(0.25 + 0.02, 0.99) = 0.27
-        assert strategy._position_peak_price["up"] == 0.27
+        # Task15: buy_price = get_safe_buy_price() = 0.25 (market price, first attempt)
+        assert strategy._position_peak_price["up"] == 0.25
 
     @pytest.mark.asyncio
     async def test_cancel_failure_does_not_block_retry(self):

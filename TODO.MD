@@ -185,6 +185,20 @@ run_rebound_live.bat
   - `TestBuyFillVerification`: 12个测试（即时成交/取消重试/全部失败/溢价递增/价格上限/CLOB拒绝/成交价/模拟模式/P&L/cancel失败/无bot/token_id保存）
   - `TestOrderResultFromResponse`: 9个测试（正常成功/errorMsg拒绝/余额不足/tick_size/重复订单/FOK未成交/服务端失败/matched/delayed）
 
+### ✅ 任务15: 市场价格买入卖出 + Schedule策略类型过滤
+- **完成时间**: 2025-01
+- **修改文件**:
+  - **`strategies/rebound.py`**:
+    - 新增 `get_safe_buy_price()`: 使用orderbook best ask获取市场买入价，fallback链: best_ask → midpoint+tick → last_trade+tick → local_orderbook → websocket_price+0.02
+    - 修改 `get_safe_sell_price()`: 优先使用orderbook best bid（最高买单价），fallback链: best_bid → midpoint-tick → last_trade-tick → local_orderbook → 0.01
+    - 修改 `_execute_trade()`: BUY使用market price（get_safe_buy_price），重试时在市场价基础上加 attempt * 0.02 溢价
+    - 修改 `_render_status()`: 所有策略类型启用order_schedule时显示计划交易时间状态
+  - **Schedule过滤**: 已验证 `check_should_trade()` 在所有调用处已正确传递 `strategy_type` 参数（无需代码修改）
+- **新增文件**:
+  - `tests/unit/test_task15_market_price.py`: 22个测试（schedule过滤/buy price/sell price/execute_trade/render_status）
+  - `scripts/test_market_price.py`: 市场价格测试脚本（只读模式 + --live 实盘测试）
+- **测试结果**: 238 passed（含task14的21个测试更新适配新price逻辑）
+
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：
 - 每次启动都会执行 `CREATE TABLE IF NOT EXISTS`、`ALTER TABLE ADD COLUMN`、`CREATE INDEX` 等操作

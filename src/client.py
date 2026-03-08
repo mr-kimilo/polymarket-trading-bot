@@ -270,12 +270,13 @@ class ClobClient(ApiClient):
         if self.builder_creds and self.builder_creds.is_configured():
             timestamp = str(int(time.time()))
 
-            message = f"{timestamp}{method}{path}{body}"
-            signature = hmac.new(
-                self.builder_creds.api_secret.encode(),
-                message.encode(),
-                hashlib.sha256
-            ).hexdigest()
+            message = f"{timestamp}{method}{path}"
+            if body:
+                message += body.replace("'", '"')
+
+            base64_secret = base64.urlsafe_b64decode(self.builder_creds.api_secret)
+            h = hmac.new(base64_secret, message.encode("utf-8"), hashlib.sha256)
+            signature = base64.urlsafe_b64encode(h.digest()).decode("utf-8")
 
             headers.update({
                 "POLY_BUILDER_API_KEY": self.builder_creds.api_key,
@@ -790,12 +791,13 @@ class RelayerClient(ApiClient):
 
         timestamp = str(int(time.time()))
 
-        message = f"{timestamp}{method}{path}{body}"
-        signature = hmac.new(
-            self.builder_creds.api_secret.encode(),
-            message.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        message = f"{timestamp}{method}{path}"
+        if body:
+            message += body.replace("'", '"')
+
+        base64_secret = base64.urlsafe_b64decode(self.builder_creds.api_secret)
+        h = hmac.new(base64_secret, message.encode("utf-8"), hashlib.sha256)
+        signature = base64.urlsafe_b64encode(h.digest()).decode("utf-8")
 
         return {
             "POLY_BUILDER_API_KEY": self.builder_creds.api_key,

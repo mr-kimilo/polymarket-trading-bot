@@ -1135,43 +1135,62 @@ class ReboundStrategy:
             if not buy_filled:
                 self.log(
                     f"[LIVE] BUY failed after {max_buy_retries + 1} attempts, "
-                    f"order not filled",
+                    f"order not filled. No DB record created.",
                     "error"
                 )
-                # 记录buy_failed到数据库
-                order.status = "buy_failed"
-                self.db.create_rebound_order(order)
+                # 任务16: 不再将buy_failed记录写入数据库
+                # 只有下单成功（filled）才插入DB
                 return False
         else:
             self.log(f"[SIMULATED] Would BUY {side.upper()} @ {current_price:.4f}", "trade")
-        
-        # 保存到数据库
+
+        # 任务16: 模拟模式仅在内存中跟踪持仓，不写入数据库
+        # 避免模拟数据污染数据库，让用户误以为有真实订单
+        if self.config.simulation_mode:
+            sim_marker = f"sim_{side}"
+            self._current_period_orders.append(sim_marker)
+            actual_entry = current_price
+            self._active_positions[side] = {
+                "db_id": None,
+                "entry_price": actual_entry,
+                "size": size,
+                "entry_time": time.time(),
+                "token_id": token_id,
+            }
+            if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
+                self._position_peak_price[side] = actual_entry
+                self._active_positions[side]["_tp_eligible"] = False
+
+            self.log(
+                f"[SIMULATED] Opened {side.upper()} position @ {actual_entry:.4f} "
+                f"(size={size:.2f}, segment={trigger_info.get('segment')})",
+                "trade"
+            )
+            return True
+
+        # 真实模式: 保存到数据库
         db_order_id = self.db.create_rebound_order(order)
         if db_order_id:
             self._current_period_orders.append(db_order_id)
-            # 任务14: 使用实际成交价格（live模式下order.entry_price已更新为fill价格）
-            actual_entry = order.entry_price if not self.config.simulation_mode else current_price
+            actual_entry = order.entry_price  # 任务14: live模式下已更新为实际成交价格
             self._active_positions[side] = {
                 "db_id": db_order_id,
                 "entry_price": actual_entry,
                 "size": size,
                 "entry_time": time.time(),
-                "token_id": token_id,  # 任务14: 保存token_id用于后续卖出
+                "token_id": token_id,
             }
-            # initialize P&L tracking for strategy_type == "3"
             if self.config.profit_and_loss_enabled and self.config.strategy_type == "3":
-                # record peak at entry and mark TP not yet eligible
                 self._position_peak_price[side] = actual_entry
                 self._active_positions[side]["_tp_eligible"] = False
-            
-            mode_str = "SIMULATED" if self.config.simulation_mode else "REAL"
+
             self.log(
-                f"[{mode_str}] Opened {side.upper()} position @ {actual_entry:.4f} "
+                f"[REAL] Opened {side.upper()} position @ {actual_entry:.4f} "
                 f"(size={size:.2f}, segment={trigger_info.get('segment')})",
                 "trade"
             )
             return True
-        
+
         return False
 
     async def direct_sell_all_positions(self, reason: str = "direct_sell") -> Dict[str, bool]:

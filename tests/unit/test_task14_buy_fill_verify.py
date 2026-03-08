@@ -113,7 +113,7 @@ class TestBuyFillVerification:
 
     @pytest.mark.asyncio
     async def test_buy_all_retries_fail_returns_false(self):
-        """When all retry attempts fail, should return False and record buy_failed."""
+        """When all retry attempts fail, should return False without DB record (Task 16)."""
         strategy = _make_strategy()
         strategy.bot.place_order.return_value = _make_order_result()
         strategy._wait_for_order_fill = AsyncMock(
@@ -127,9 +127,8 @@ class TestBuyFillVerification:
         assert result is False
         # 4 attempts total (1 initial + 3 retries)
         assert strategy.bot.place_order.call_count == 4
-        # buy_failed DB record should be created
-        failed_order = strategy.db.create_rebound_order.call_args[0][0]
-        assert failed_order.status == "buy_failed"
+        # 任务16: buy_failed不再写入数据库
+        strategy.db.create_rebound_order.assert_not_called()
         # No active position
         assert "up" not in strategy._active_positions
 
@@ -217,7 +216,7 @@ class TestBuyFillVerification:
 
     @pytest.mark.asyncio
     async def test_simulation_mode_skips_fill_verification(self):
-        """Simulation mode should not place orders or verify fills."""
+        """Simulation mode should not place orders or verify fills (Task 16: no DB)."""
         strategy = _make_strategy(simulation_mode=True)
 
         trigger_info = {"segment": "A", "up_price": 0.30, "down_price": 0.70, "btc_drop": 10}
@@ -225,10 +224,11 @@ class TestBuyFillVerification:
 
         assert result is True
         strategy.bot.place_order.assert_not_called()
-        # DB should still be inserted with simulated status
-        strategy.db.create_rebound_order.assert_called_once()
-        saved_order = strategy.db.create_rebound_order.call_args[0][0]
-        assert saved_order.is_simulated is True
+        # 任务16: 模拟模式不再写入数据库
+        strategy.db.create_rebound_order.assert_not_called()
+        # 仍然在内存中跟踪持仓
+        assert "up" in strategy._active_positions
+        assert strategy._active_positions["up"]["db_id"] is None
 
     @pytest.mark.asyncio
     async def test_strategy3_pnl_tracking_uses_fill_price(self):

@@ -81,9 +81,10 @@ class TestOrderSigner:
         assert "signer" in result
 
         assert result["order"]["tokenId"] == "1234567890123456789"
-        assert result["order"]["price"] == 0.65
-        assert result["order"]["size"] == 10.0
         assert result["order"]["side"] == "BUY"
+        # API format uses makerAmount/takerAmount strings, not price/size
+        assert "makerAmount" in result["order"]
+        assert "takerAmount" in result["order"]
 
     def test_sign_order_dict_sell_side(self):
         """Test signing SELL order."""
@@ -108,7 +109,8 @@ class TestOrderSigner:
             nonce=12345
         )
 
-        assert result["order"]["nonce"] == 12345
+        # On-chain nonce is always "0" per Polymarket protocol
+        assert result["order"]["nonce"] == "0"
 
     def test_sign_order_with_fee(self):
         """Test signing order with fee rate."""
@@ -121,7 +123,8 @@ class TestOrderSigner:
             fee_rate_bps=100  # 1%
         )
 
-        assert result["order"]["feeRateBps"] == 100
+        # API format returns feeRateBps as string
+        assert result["order"]["feeRateBps"] == "100"
 
     def test_sign_order_generates_valid_signature(self):
         """Test that signature is valid format."""

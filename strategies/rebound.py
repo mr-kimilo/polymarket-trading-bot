@@ -466,31 +466,29 @@ class ReboundStrategy:
         return not has_schedule
     
     def _get_effective_threshold(self) -> float:
-        """获取当前生效的入场阈值"""
-        # 只有策略1启用周期优化
-        if self.config.strategy_type != "1":
+        """获取当前生效的入场阈值（策略1和策略3支持weekday_strict严格模式）"""
+        # 策略2的阈值(0.15)远低于weekday_strict阈值(0.25)，应用会变宽松，故不适用
+        if self.config.strategy_type not in ("1", "3"):
             return self._original_threshold
         if not self.config.weekday_strict_enabled:
             return self._original_threshold
         if self._is_weekday_strict():
             return self.config.weekday_strict_threshold
         return self._original_threshold
-    
+
     def _get_effective_btc_max(self) -> float:
-        """获取当前生效的BTC变化限制"""
-        # 只有策略1启用周期优化
-        if self.config.strategy_type != "1":
+        """获取当前生效的BTC变化限制（策略1和策略3支持weekday_strict严格模式）"""
+        if self.config.strategy_type not in ("1", "3"):
             return self._original_btc_max
         if not self.config.weekday_strict_enabled:
             return self._original_btc_max
         if self._is_weekday_strict():
             return self.config.weekday_strict_btc_max
         return self._original_btc_max
-    
+
     def _get_effective_size(self) -> float:
-        """获取当前生效的仓位大小"""
-        # 只有策略1启用周期优化
-        if self.config.strategy_type != "1":
+        """获取当前生效的仓位大小（策略1和策略3支持weekday_strict严格模式）"""
+        if self.config.strategy_type not in ("1", "3"):
             return self._original_size
         if not self.config.weekday_strict_enabled:
             return self._original_size
@@ -508,7 +506,7 @@ class ReboundStrategy:
         env = "sim" if self.config.simulation_mode else "prod"
         has_schedule = self.db.check_should_trade(env, self.config.strategy_type)
         
-        is_strict = self._is_weekday_strict() and self.config.strategy_type == "1"
+        is_strict = self._is_weekday_strict() and self.config.strategy_type in ("1", "3")
         return {
             "weekday": weekday,
             "weekday_name": weekday_names[weekday],
@@ -1809,20 +1807,20 @@ class ReboundStrategy:
                 return
         
         # 检查BTC条件
-        # V2: 策略3使用动态btc_drop_max
+        # V2: 策略3使用动态btc_drop_max；无动态参数时回退到有效值（含weekday_strict）
         if self.config.strategy_type == "3":
-            btc_drop_max = self._get_dynamic_param("price_down", self.config.btc_drop_max)
+            btc_drop_max = self._get_dynamic_param("price_down", self._get_effective_btc_max())
             if not self._check_btc_condition(btc_max_override=btc_drop_max):
                 return
         else:
             if not self._check_btc_condition():
                 return
-        
+
         # 检测UP和DOWN的快速下跌
-        # V2: 策略3使用动态threshold
+        # V2: 策略3使用动态threshold；无动态参数时回退到有效值（含weekday_strict）
         v2_threshold = None
         if self.config.strategy_type == "3":
-            v2_threshold = self._get_dynamic_param("price_down_percentage", self.config.price_drop_threshold)
+            v2_threshold = self._get_dynamic_param("price_down_percentage", self._get_effective_threshold())
         
         for side in ["up", "down"]:
             drop_info = self._detect_rapid_drop(side, threshold_override=v2_threshold)

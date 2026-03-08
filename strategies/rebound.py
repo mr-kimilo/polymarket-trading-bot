@@ -408,6 +408,7 @@ class ReboundStrategy:
         # 当前周期的订单
         self._current_period_orders: List[int] = []  # 数据库订单ID列表
         self._active_positions: Dict[str, Dict] = {}  # side -> position info
+        self._closing_sides: set = set()  # sides currently being closed (prevents double-close)
         # P&L tracking: record peak price (highest observed price after entry) per side
         self._position_peak_price: Dict[str, float] = {}
 
@@ -1402,14 +1403,18 @@ class ReboundStrategy:
     async def _execute_close_live(self, side: str, exit_price: float, pos_info: Dict, db_id: Optional[int], reason: str = "") -> None:
         """Execute a LIVE SELL to close a position and update the DB afterwards.
         
-        任务13修复: 
-        - GTC订单提交后验证成交状态（轮询get_order）
-        - 未成交时取消订单并以更激进的价格重试
-        - 使用实际成交价格更新数据库PnL
+        Improvements:
+        - FOK mode: immediate fill-or-kill, retry every 0.5s with increasing discount
+        - GTC mode: 5s poll window, cancel-and-retry with lower price
+        - First attempt: no discount (sell at exact best bid for immediate match)
+        - Discount steps: sell_discount per retry (default 2%), max 50%
+        - Max retries: 30 (~25s for FOK, ~3min for GTC)
+        - On success: removes position from _active_positions
+        - On failure: clears _closing_sides so P&L evaluator can retry
         """
-        # Ensure bot exists
         if not self.bot:
             self.log("Error: Bot not initialized for LIVE closing", "error")
+            self._closing_sides.discard(side)
             return
 
         token_id = pos_info.get("token_id") or self.token_ids.get(side)
@@ -1417,60 +1422,67 @@ class ReboundStrategy:
         entry_price = pos_info.get("entry_price", 0)
 
         from asyncio import sleep
-        max_retries = 10
+        max_retries = 30
         retry = 0
         order_filled = False
-        actual_sell_price = exit_price  # 默认用触发价格，成交后用实际价格
-        
-        # 任务61: 获取配置参数
-        use_gtc = getattr(self.config, 'strategy3_use_gtc_order', True)
-        sell_discount = getattr(self.config, 'strategy3_sell_discount', 0.03)
+        actual_sell_price = exit_price
+
+        use_gtc = getattr(self.config, 'strategy3_use_gtc_order', False)
+        sell_discount_step = getattr(self.config, 'strategy3_sell_discount', 0.02)
         order_type = 'GTC' if use_gtc else 'FOK'
-        
-        self.log(f"[DEBUG] _execute_close_live started for {side.upper()}, token_id={token_id}, size={size}", "info")
-        self.log(f"[DEBUG] Order config: use_gtc={use_gtc}, sell_discount={sell_discount}, order_type={order_type}", "info")
-        
+
+        self.log(
+            f"[SELL] Starting close {side.upper()} | token={token_id} size={size} "
+            f"mode={order_type} max_retries={max_retries}",
+            "info"
+        )
+
+        # Validate and round size once — it does not change between retries
+        try:
+            rounded_size = round(float(size), 2)
+            if rounded_size <= 0:
+                self.log(f"[SELL] Invalid size {size} for {side.upper()}, aborting", "error")
+                self._closing_sides.discard(side)
+                return
+        except Exception as e:
+            self.log(f"[SELL] Cannot parse size {size}: {e}", "error")
+            self._closing_sides.discard(side)
+            return
+
+        # Fee rate (constant across retries)
+        fee_rate_bps = 1000
+        if hasattr(self, 'market') and self.market and self.market.current_market:
+            raw = self.market.current_market.raw if hasattr(self.market.current_market, 'raw') else None
+            if raw and 'takerFeeBps' in raw:
+                fee_rate_bps = int(raw['takerFeeBps'])
+
         while retry < max_retries:
-            # 每次重试都重新获取最新盘口价格
+            # Get fresh best bid on every attempt
             sell_price = await self.get_safe_sell_price(token_id, side)
-            
-            self.log(f"[DEBUG] get_safe_sell_price returned: {sell_price} (type: {type(sell_price).__name__})", "info")
 
             if sell_price <= 0 or sell_price >= 1:
-                self.log(f"[WARN] Invalid sell_price {sell_price}, using fallback 0.01", "warning")
+                self.log(f"[SELL] Invalid best-bid {sell_price}, using 0.01 fallback", "warning")
                 sell_price = 0.01
-            
-            # 任务13: 每次重试递增折扣，使卖出价格更激进
-            # retry 0: base discount (3%), retry 1: 5%, retry 2: 7%, ...
-            effective_discount = sell_discount + (retry * 0.02)
-            effective_discount = min(effective_discount, 0.15)  # 最大15%折扣
-            
-            if use_gtc and effective_discount > 0:
+
+            # retry=0: no discount (sell AT best bid for immediate match)
+            # retry≥1: apply discount * retry, capped at 50%
+            if retry > 0:
+                effective_discount = min(sell_discount_step * retry, 0.50)
                 original_price = sell_price
-                sell_price = round(sell_price * (1 - effective_discount), 2)
-                sell_price = max(0.01, sell_price)
-                self.log(f"[DEBUG] Applied sell discount (retry={retry}): {original_price:.4f} -> {sell_price:.4f} (-{effective_discount*100:.0f}%)", "info")
-            
-            # Ensure size precision
-            try:
-                rounded_size = round(float(size), 2)
-                if rounded_size <= 0:
-                    self.log(f"Error: Invalid size {size} for {side.upper()}, cannot place SELL", "error")
-                    return
-            except Exception as e:
-                self.log(f"Error: Failed to round size {size}: {e}", "error")
-                return
+                sell_price = max(0.01, round(sell_price * (1 - effective_discount), 2))
+                self.log(
+                    f"[SELL] Retry {retry}: {original_price:.4f} -> {sell_price:.4f} "
+                    f"(-{effective_discount*100:.0f}%)",
+                    "info"
+                )
 
-            self.log(f"[LIVE] Placing close SELL {side.upper()} @ {sell_price:.4f} size={rounded_size:.2f} (reason: {reason}, retry={retry}, type={order_type})", "trade")
+            self.log(
+                f"[SELL] Attempt {retry+1}/{max_retries}: {side.upper()} @ {sell_price:.4f} "
+                f"size={rounded_size} [{order_type}] reason={reason}",
+                "trade"
+            )
 
             try:
-                # 获取当前市场真实费率
-                fee_rate_bps = 1000
-                if hasattr(self, 'market') and self.market and self.market.current_market:
-                    raw = self.market.current_market.raw if hasattr(self.market.current_market, 'raw') else None
-                    if raw and 'takerFeeBps' in raw:
-                        fee_rate_bps = int(raw['takerFeeBps'])
-
                 result = await self.bot.place_order(
                     token_id=token_id,
                     price=sell_price,
@@ -1481,62 +1493,87 @@ class ReboundStrategy:
                 )
 
                 if result.success:
-                    self.log(f"[LIVE] Close SELL placed for {side.upper()} (order={result.order_id}, type={order_type})", "success")
-                    
-                    # 任务13: 如果订单状态为 matched，说明立即成交
+                    self.log(
+                        f"[SELL] Order accepted: id={result.order_id} status={result.status}",
+                        "success"
+                    )
+
+                    # Immediately matched (common for FOK at/below best bid)
                     if result.status == "matched":
-                        self.log(f"[LIVE] Order immediately matched for {side.upper()}", "success")
                         actual_sell_price = sell_price
                         order_filled = True
                         break
-                    
-                    # 任务13: GTC订单需要轮询确认成交状态
-                    if use_gtc and result.order_id:
-                        fill_result = await self._wait_for_order_fill(
-                            result.order_id, timeout=15.0, poll_interval=2.0
-                        )
-                        
-                        if fill_result["filled"]:
-                            self.log(f"[LIVE] GTC order filled for {side.upper()} (matched={fill_result['size_matched']})", "success")
-                            actual_sell_price = sell_price
-                            order_filled = True
-                            break
+
+                    if use_gtc:
+                        if not result.order_id:
+                            # GTC with no order ID — unexpected, treat as failed attempt
+                            self.log("[SELL] GTC returned no order_id, retrying", "warning")
                         else:
-                            # 订单未成交，取消后重试
-                            self.log(
-                                f"[LIVE] GTC order NOT filled for {side.upper()} "
-                                f"(status={fill_result['status']}), cancelling and retrying with lower price",
-                                "warning"
+                            fill_result = await self._wait_for_order_fill(
+                                result.order_id, timeout=5.0, poll_interval=1.0
                             )
-                            try:
-                                await self.bot.cancel_order(result.order_id)
-                                self.log(f"[LIVE] Cancelled unfilled order {result.order_id}", "info")
-                            except Exception as ce:
-                                self.log(f"[WARN] Failed to cancel order {result.order_id}: {ce}", "warning")
+                            if fill_result["filled"]:
+                                self.log(
+                                    f"[SELL] GTC filled: matched={fill_result['size_matched']}",
+                                    "success"
+                                )
+                                actual_sell_price = sell_price
+                                order_filled = True
+                                break
+                            else:
+                                self.log(
+                                    f"[SELL] GTC not filled (status={fill_result['status']}), "
+                                    "cancelling and retrying lower",
+                                    "warning"
+                                )
+                                try:
+                                    await self.bot.cancel_order(result.order_id)
+                                except Exception as ce:
+                                    self.log(f"[SELL] Cancel failed: {ce}", "warning")
                     else:
-                        # FOK 模式 或 无 order_id: success 即成交
-                        actual_sell_price = sell_price
-                        order_filled = True
-                        break
+                        # FOK: success=True but status != "matched" means it was cancelled (no match)
+                        self.log(
+                            f"[SELL] FOK no match (status={result.status}), retrying lower",
+                            "warning"
+                        )
                 else:
-                    self.log(f"[LIVE] Close SELL failed for {side.upper()}: {result.message}", "error")
+                    self.log(f"[SELL] Order rejected: {result.message}", "error")
+
             except Exception as e:
-                self.log(f"[LIVE] Exception placing close SELL for {side.upper()}: {e}", "error")
+                self.log(f"[SELL] Exception: {e}", "error")
 
             retry += 1
-            await sleep(2)
+            # FOK retries are fast; GTC retries wait a bit to avoid hammering the API
+            await sleep(0.5 if not use_gtc else 2.0)
 
-        if not order_filled:
-            self.log(f"[LIVE] ⚠️ 卖出重试{max_retries}次仍未成交，建议人工干预！side={side.upper()}, token={token_id}", "error")
+        # --- Post-loop cleanup ---
+        if order_filled:
+            self.log(
+                f"[SELL] ✅ Filled {side.upper()} @ {actual_sell_price:.4f} "
+                f"after {retry} attempt(s)",
+                "success"
+            )
+            # Remove from active positions and peak tracker — close is complete
+            self._active_positions.pop(side, None)
+            self._position_peak_price.pop(side, None)
+        else:
+            self.log(
+                f"[SELL] ⚠️ {side.upper()} UNFILLED after {max_retries} attempts. "
+                f"token={token_id}. Manual intervention recommended.",
+                "error"
+            )
+            # Reset closing flag so P&L evaluator can try again on next tick
+            self._closing_sides.discard(side)
 
-        # 任务13: 使用实际成交价格更新数据库（而非触发时的价格）
+        # Always release the closing lock when done
+        self._closing_sides.discard(side)
+
+        # Update DB with final outcome
         final_exit_price = actual_sell_price if order_filled else exit_price
         if entry_price and db_id:
             pnl = (final_exit_price - entry_price) * size
             pnl_percent = (final_exit_price - entry_price) / entry_price * 100
-            
             rebound_trend = self._get_rebound_trend_summary(side)
-            
             status = OrderStatus.CLOSED.value if order_filled else "sell_failed"
             self.db.update_rebound_order_result(
                 order_id=db_id,
@@ -1551,7 +1588,9 @@ class ReboundStrategy:
             trend_info = f" [Trend: {rebound_trend}]" if rebound_trend else ""
             fill_info = "" if order_filled else f" {Colors.RED}[UNFILLED]{Colors.RESET}"
             self.log(
-                f"[REAL] Closed {side.upper()} @ {final_exit_price:.4f} PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} {reason}{trend_info}{fill_info}",
+                f"[REAL] Closed {side.upper()} @ {final_exit_price:.4f} "
+                f"PnL: {color}${pnl:+.2f} ({pnl_percent:+.1f}%){Colors.RESET} "
+                f"{reason}{trend_info}{fill_info}",
                 "success" if pnl >= 0 else "warning"
             )
 
@@ -1594,12 +1633,18 @@ class ReboundStrategy:
                 )
 
         else:
-            # LIVE mode: schedule async sell and DB update via helper
+            # LIVE mode: mark as closing, then schedule async sell
+            # Position stays in _active_positions until _execute_close_live confirms fill
+            if side in self._closing_sides:
+                self.log(f"[CLOSE] {side.upper()} already closing, skipping duplicate request", "warning")
+                return
+            self._closing_sides.add(side)
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(self._execute_close_live(side, exit_price, pos_info, db_id, reason=reason))
             except RuntimeError:
                 asyncio.ensure_future(self._execute_close_live(side, exit_price, pos_info, db_id, reason=reason))
+            # NOTE: do NOT delete from _active_positions here — _execute_close_live does it on success
 
         # 任务56补充：将关闭的订单信息保存到 _closed_positions_for_trend
         # 这样可以继续记录趋势直到15分钟结束
@@ -1610,11 +1655,12 @@ class ReboundStrategy:
             }
             self.log(f"[TREND] Will continue tracking {side.upper()} trend until period end", "debug")
 
-        # cleanup local state
-        if side in self._position_peak_price:
-            del self._position_peak_price[side]
-        if side in self._active_positions:
-            del self._active_positions[side]
+        # Simulation mode: cleanup local state immediately (no async close)
+        if self.config.simulation_mode:
+            if side in self._position_peak_price:
+                del self._position_peak_price[side]
+            if side in self._active_positions:
+                del self._active_positions[side]
 
     def _evaluate_positions_for_profit_and_loss(self) -> None:
         """Evaluate open positions for take-profit or stop-loss rules (strategy 3 only).
@@ -1633,6 +1679,10 @@ class ReboundStrategy:
 
         # For each active position, update peak price and evaluate rules
         for side, pos in list(self._active_positions.items()):
+            # Skip positions already being closed (async sell in-flight)
+            if side in self._closing_sides:
+                continue
+
             current_price = self.prices.get_current_price(side)
             if current_price <= 0:
                 continue
@@ -1707,6 +1757,9 @@ class ReboundStrategy:
         
         # 重置已关闭订单的趋势跟踪 (任务56补充)
         self._closed_positions_for_trend.clear()
+        
+        # 重置 closing 标记 (新周期所有异步卖出任务已超时/完成)
+        self._closing_sides.clear()
         
         # 重置BTC开始价格：使用Binance Kline API获取新周期的真实开盘价
         kline_open = self._fetch_binance_kline_open_price("15m")

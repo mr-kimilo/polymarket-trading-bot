@@ -1,3 +1,4 @@
+#bno init
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
@@ -52,3 +53,4 @@ yarn-debug.log*
 yarn-error.log*
 
 files/
+db_server_init.sql

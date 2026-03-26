@@ -203,6 +203,9 @@ run_rebound_live.bat
 
 任务17.买入时机不对，现在百分比不是根据配置的25%，btc变化30，来买的，找到原因。
 
+任务18.允许模拟模式插入数据库。
+任务19.当前使用策略三，买入之后，卖出失败，没有以市场价卖出，查找polymarket的API,尝试卖出。
+
 ## 根本原因
 多进程同时执行数据库表初始化（DDL操作）时，发生死锁：
 - 每次启动都会执行 `CREATE TABLE IF NOT EXISTS`、`ALTER TABLE ADD COLUMN`、`CREATE INDEX` 等操作

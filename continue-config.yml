@@ -1,0 +1,52 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Qwen 32B instruct
+    provider: lmstudio
+    model: qwen2.5-32b-instruct
+    apiBase: http://localhost:1234/v1
+    roles:
+      - chat
+      - edit
+      - apply
+      - summarize
+      - agent     # 显式启用 Agent 相关角色
+    capabilities:
+      - tool_use    # 强制启用工具调用（Agent 模式必须，否则灰掉）
+
+  - name: Qwen 3.5 35B
+    provider: lmstudio
+    model: qwen3.5-35b-a3b
+    apiBase: http://localhost:1234/v1
+    roles:
+      - chat
+      - edit
+      - apply
+      - summarize
+      - agent
+    capabilities:
+      - tool_use
+
+tabAutocompleteModel:
+  name: Qwen 32B instruct (autocomplete)
+  provider: lmstudio
+  model: qwen2.5-32b-instruct
+  apiBase: http://localhost:1234/v1
+  roles:
+    - autocomplete
+  completionOptions:
+    temperature: 0.1
+    maxTokens: 512
+
+# 推荐添加，让 Agent 更好用（上下文提供者）
+context:
+  - provider: code
+  - provider: diffs
+  - provider: terminal
+  - provider: problems
+
+# 可选：实验性自动应用变更（测试时先别开太大）
+experimental:
+  autoApplyDelay: 5000  # 5秒后自动接受 diff（0=立即，慎用）

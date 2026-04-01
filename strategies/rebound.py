@@ -1261,15 +1261,16 @@ class ReboundStrategy:
                     )
                     results[side] = True
                 else:
-                    # LIVE mode - execute real sell
+                    # LIVE mode - execute real sell (await blocks until complete)
                     await self._execute_close_live(side, sell_price, pos_info, db_id, reason=f"direct_sell:{reason}")
                     results[side] = True
                 
-                # Cleanup
-                if side in self._position_peak_price:
-                    del self._position_peak_price[side]
-                if side in self._active_positions:
-                    del self._active_positions[side]
+                # Cleanup — only for simulation; LIVE cleanup is done by _execute_close_live
+                if self.config.simulation_mode:
+                    if side in self._position_peak_price:
+                        del self._position_peak_price[side]
+                    if side in self._active_positions:
+                        del self._active_positions[side]
                     
             except Exception as e:
                 self.log(f"[DIRECT_SELL] Error selling {side}: {e}", "error")
@@ -1329,21 +1330,27 @@ class ReboundStrategy:
                         "success" if pnl >= 0 else "warning"
                     )
             else:
-                # LIVE mode: schedule an async sell execution task that will perform
-                # the actual order placement and update the DB when done.
+                # LIVE mode: schedule async sell. Pass a copy of pos_info so the
+                # task retains all position data even after local cleanup.
+                pos_copy = dict(pos_info)
+                if side in self._closing_sides:
+                    self.log(f"[CLOSE_ALL] {side.upper()} already closing, skipping", "warning")
+                    continue
+                self._closing_sides.add(side)
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(self._execute_close_live(side, current_price, pos_info, db_id, reason="period_end"))
+                    loop.create_task(self._execute_close_live(side, current_price, pos_copy, db_id, reason="period_end"))
                 except RuntimeError:
-                    # No running loop: try to schedule via asyncio.ensure_future
-                    asyncio.ensure_future(self._execute_close_live(side, current_price, pos_info, db_id, reason="period_end"))
+                    asyncio.ensure_future(self._execute_close_live(side, current_price, pos_copy, db_id, reason="period_end"))
 
             # cleanup peak tracker
             if side in self._position_peak_price:
                 del self._position_peak_price[side]
 
-        # 清空持仓记录 locally; DB will be updated by tasks in LIVE mode
-        self._active_positions.clear()
+        # Simulated mode: clear positions immediately
+        # LIVE mode: do NOT clear — _execute_close_live will pop each position on success
+        if self.config.simulation_mode:
+            self._active_positions.clear()
         self._current_period_orders.clear()
 
     async def _wait_for_order_fill(self, order_id: str, timeout: float = 15.0, poll_interval: float = 2.0) -> Dict:
@@ -1401,12 +1408,13 @@ class ReboundStrategy:
     async def _execute_close_live(self, side: str, exit_price: float, pos_info: Dict, db_id: Optional[int], reason: str = "") -> None:
         """Execute a LIVE SELL to close a position and update the DB afterwards.
         
-        Improvements:
-        - FOK mode: immediate fill-or-kill, retry every 0.5s with increasing discount
-        - GTC mode: 5s poll window, cancel-and-retry with lower price
-        - First attempt: no discount (sell at exact best bid for immediate match)
-        - Discount steps: sell_discount per retry (default 2%), max 50%
-        - Max retries: 30 (~25s for FOK, ~3min for GTC)
+        Improvements (任务1 优化):
+        - Pre-fetch tick_size/neg_risk once, pass to place_order to skip redundant API calls
+        - Phase 1 (attempts 1-3): FOK at best bid, 0.2s between retries (fastest fill)
+        - Phase 2 (attempts 4-10): FOK with small discount, 0.3s between retries
+        - Phase 3 (attempts 11+): GTC with aggressive discount, 2s fill wait
+        - Each retry fetches fresh best bid from orderbook for accurate pricing
+        - Max retries: 25 (~15s for FOK, ~40s for GTC phase)
         - On success: removes position from _active_positions
         - On failure: clears _closing_sides so P&L evaluator can retry
         """
@@ -1420,18 +1428,16 @@ class ReboundStrategy:
         entry_price = pos_info.get("entry_price", 0)
 
         from asyncio import sleep
-        max_retries = 30
+        max_retries = 25
         retry = 0
         order_filled = False
         actual_sell_price = exit_price
 
-        use_gtc = getattr(self.config, 'strategy3_use_gtc_order', False)
         sell_discount_step = getattr(self.config, 'strategy3_sell_discount', 0.02)
-        order_type = 'GTC' if use_gtc else 'FOK'
 
         self.log(
             f"[SELL] Starting close {side.upper()} | token={token_id} size={size} "
-            f"mode={order_type} max_retries={max_retries}",
+            f"max_retries={max_retries}",
             "info"
         )
 
@@ -1454,23 +1460,54 @@ class ReboundStrategy:
             if raw and 'takerFeeBps' in raw:
                 fee_rate_bps = int(raw['takerFeeBps'])
 
+        # Pre-fetch tick_size and neg_risk once to avoid redundant API calls on each retry
+        cached_tick_size = None
+        cached_neg_risk = None
+        try:
+            clob_client = getattr(self.bot, 'clob_client', None)
+            if clob_client:
+                cached_tick_size = clob_client.get_tick_size(token_id)
+                cached_neg_risk = clob_client.get_neg_risk(token_id)
+        except Exception as e:
+            self.log(f"[SELL] Failed to pre-fetch market params: {e}", "warning")
+
         while retry < max_retries:
-            # Get fresh best bid on every attempt
-            sell_price = await self.get_safe_sell_price(token_id, side)
+            # Adaptive phase selection for speed:
+            # Phase 1 (retry 0-2): FOK at best bid, fastest retries
+            # Phase 2 (retry 3-9): FOK with increasing discount, fast retries
+            # Phase 3 (retry 10+): GTC with aggressive discount, wait for fill
+            if retry < 3:
+                order_type = 'FOK'
+                retry_delay = 0.2
+                discount = 0.0  # No discount, sell at best bid
+            elif retry < 10:
+                order_type = 'FOK'
+                retry_delay = 0.3
+                discount = min(sell_discount_step * (retry - 2), 0.30)
+            else:
+                order_type = 'GTC'
+                retry_delay = 0.5
+                discount = min(sell_discount_step * (retry - 2), 0.50)
+
+            # Get fresh best bid from orderbook on every attempt
+            best_bid = await self.bot.get_best_bid(token_id)
+            if best_bid and best_bid > 0.01:
+                sell_price = best_bid
+            else:
+                # Fallback to get_safe_sell_price if get_best_bid fails
+                sell_price = await self.get_safe_sell_price(token_id, side)
 
             if sell_price <= 0 or sell_price >= 1:
                 self.log(f"[SELL] Invalid best-bid {sell_price}, using 0.01 fallback", "warning")
                 sell_price = 0.01
 
-            # retry=0: no discount (sell AT best bid for immediate match)
-            # retry≥1: apply discount * retry, capped at 50%
-            if retry > 0:
-                effective_discount = min(sell_discount_step * retry, 0.50)
+            # Apply discount for retries
+            if discount > 0:
                 original_price = sell_price
-                sell_price = max(0.01, round(sell_price * (1 - effective_discount), 2))
+                sell_price = max(0.01, round(sell_price * (1 - discount), 2))
                 self.log(
                     f"[SELL] Retry {retry}: {original_price:.4f} -> {sell_price:.4f} "
-                    f"(-{effective_discount*100:.0f}%)",
+                    f"(-{discount*100:.0f}%) [{order_type}]",
                     "info"
                 )
 
@@ -1487,7 +1524,9 @@ class ReboundStrategy:
                     size=rounded_size,
                     side='SELL',
                     order_type=order_type,
-                    fee_rate_bps=fee_rate_bps
+                    fee_rate_bps=fee_rate_bps,
+                    tick_size=cached_tick_size,
+                    neg_risk=cached_neg_risk,
                 )
 
                 if result.success:
@@ -1502,13 +1541,12 @@ class ReboundStrategy:
                         order_filled = True
                         break
 
-                    if use_gtc:
+                    if order_type == 'GTC':
                         if not result.order_id:
-                            # GTC with no order ID — unexpected, treat as failed attempt
                             self.log("[SELL] GTC returned no order_id, retrying", "warning")
                         else:
                             fill_result = await self._wait_for_order_fill(
-                                result.order_id, timeout=5.0, poll_interval=1.0
+                                result.order_id, timeout=2.0, poll_interval=0.5
                             )
                             if fill_result["filled"]:
                                 self.log(
@@ -1541,8 +1579,7 @@ class ReboundStrategy:
                 self.log(f"[SELL] Exception: {e}", "error")
 
             retry += 1
-            # FOK retries are fast; GTC retries wait a bit to avoid hammering the API
-            await sleep(0.5 if not use_gtc else 2.0)
+            await sleep(retry_delay)
 
         # --- Post-loop cleanup ---
         if order_filled:

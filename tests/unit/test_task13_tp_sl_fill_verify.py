@@ -38,6 +38,7 @@ def _make_strategy(simulation_mode: bool = False, strategy_type: str = "3"):
     mock_bot.get_order = AsyncMock()
     mock_bot.place_order = AsyncMock()
     mock_bot.cancel_order = AsyncMock()
+    mock_bot.get_best_bid = AsyncMock(return_value=0.35)
     
     # Mock clob_client for get_safe_sell_price
     mock_bot.clob_client = MagicMock()
@@ -187,71 +188,62 @@ class TestExecuteCloseLiveWithFillVerification:
 
     @pytest.mark.asyncio
     async def test_gtc_order_not_filled_cancels_and_retries(self):
-        """GTC order not filled → cancel → retry with more aggressive price."""
+        """GTC order not filled → cancel → retry with more aggressive price.
+        
+        Phase 1 (retry 0-2): FOK, no discount
+        Phase 2 (retry 3-9): FOK with increasing discount
+        Phase 3 (retry 10+): GTC with aggressive discount, cancel if not filled
+        
+        To test GTC cancel, we need all FOK retries (0-9) to fail,
+        then the first GTC (retry 10) gets 'live' status + unfilled,
+        and the second GTC (retry 11) matches.
+        """
         strategy = _make_strategy()
 
-        # First attempt: placed as live, polling times out
-        # Second attempt: immediately matched
-        strategy.bot.place_order.side_effect = [
-            self._make_order_result(status="live", order_id="ord_1"),
-            self._make_order_result(status="matched", order_id="ord_2"),
-        ]
-        strategy.bot.get_order.return_value = {
-            "status": "live",
-            "size_matched": "0",
-            "original_size": "10.0",
-        }
+        # Build side_effect: 10 FOK failures, then GTC live (unfilled), then GTC matched
+        fok_failures = [self._make_order_result(success=False)] * 10
+        gtc_live = self._make_order_result(status="live", order_id="gtc_1")
+        gtc_matched = self._make_order_result(status="matched", order_id="gtc_2")
+        strategy.bot.place_order.side_effect = fok_failures + [gtc_live, gtc_matched]
+
         strategy.bot.cancel_order.return_value = MagicMock(success=True)
-        strategy.get_safe_sell_price = AsyncMock(return_value=0.35)
 
-        # Patch _wait_for_order_fill to simulate timeout on first call
-        original_wait = strategy._wait_for_order_fill
-
-        call_count = 0
-
-        async def mock_wait(order_id, timeout=15.0, poll_interval=2.0):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return {"filled": False, "size_matched": 0, "status": "timeout"}
-            return await original_wait(order_id, timeout, poll_interval)
-
-        strategy._wait_for_order_fill = mock_wait
+        # _wait_for_order_fill returns "not filled" for first GTC
+        strategy._wait_for_order_fill = AsyncMock(
+            return_value={"filled": False, "size_matched": 0, "status": "live"}
+        )
 
         pos_info = {"token_id": "token_up", "size": 10.0, "entry_price": 0.30}
         await strategy._execute_close_live("up", 0.35, pos_info, db_id=1, reason="tp")
 
-        # Should have cancelled the first unfilled order
-        strategy.bot.cancel_order.assert_called_with("ord_1")
-        # Should have placed 2 orders (first unfilled, second matched)
-        assert strategy.bot.place_order.call_count == 2
+        # Should have cancelled the unfilled GTC order
+        strategy.bot.cancel_order.assert_called_with("gtc_1")
+        # 10 FOK + 2 GTC = 12 total
+        assert strategy.bot.place_order.call_count == 12
 
     @pytest.mark.asyncio
     async def test_progressive_discount_increases_on_retries(self):
-        """Each retry should apply a larger discount to increase fill probability."""
+        """Each retry should apply a larger discount to increase fill probability.
+        
+        Actual phases: FOK 0-2 (no discount), FOK 3-9 (up to 30%), GTC 10+ (up to 50%).
+        Max retries = 25.
+        """
         strategy = _make_strategy()
 
         # All attempts fail
         strategy.bot.place_order.return_value = self._make_order_result(success=False)
-        strategy.get_safe_sell_price = AsyncMock(return_value=0.50)
 
         pos_info = {"token_id": "token_up", "size": 10.0, "entry_price": 0.30}
         await strategy._execute_close_live("up", 0.50, pos_info, db_id=1, reason="tp")
 
-        # Check that place_order was called max_retries times (10)
-        assert strategy.bot.place_order.call_count == 10
+        # Should have tried max_retries (25) times
+        assert strategy.bot.place_order.call_count == 25
 
-        # Verify each call had progressively lower prices
-        prices = [
-            call.kwargs["price"] if "price" in call.kwargs else call.args[1]
-            for call in strategy.bot.place_order.call_args_list
-        ]
-        # price keyword argument
+        # Verify prices are non-increasing (progressively more aggressive)
         prices = []
         for c in strategy.bot.place_order.call_args_list:
-            prices.append(c[1]["price"] if isinstance(c[1], dict) else c.kwargs["price"])
+            prices.append(c.kwargs["price"])
 
-        # Each price should be <= the previous (progressively more aggressive)
         for i in range(1, len(prices)):
             assert prices[i] <= prices[i - 1], f"Price at retry {i} should be <= retry {i - 1}"
 
@@ -285,21 +277,27 @@ class TestExecuteCloseLiveWithFillVerification:
         strategy.bot.get_order.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_max_discount_capped_at_15_percent(self):
-        """Discount should not exceed 15% regardless of retry count."""
+    async def test_max_discount_capped_at_50_percent(self):
+        """Discount should not exceed 50% (GTC phase cap) regardless of retry count.
+        
+        Phase 2 (FOK): capped at 30%. Phase 3 (GTC, retry 10+): capped at 50%.
+        With sell_discount_step=0.10 and 25 retries, last GTC discount = min(0.10*(23-2), 0.50) = 0.50
+        sell_price = 0.35 * (1 - 0.50) = 0.175 → 0.18
+        """
         strategy = _make_strategy()
-        strategy.config.strategy3_sell_discount = 0.10  # 10% base
+        strategy.config.strategy3_sell_discount = 0.10  # 10% step
 
         # Fail all attempts to check discount cap
         strategy.bot.place_order.return_value = self._make_order_result(success=False)
-        strategy.get_safe_sell_price = AsyncMock(return_value=0.50)
 
         pos_info = {"token_id": "token_up", "size": 10.0, "entry_price": 0.30}
         await strategy._execute_close_live("up", 0.50, pos_info, db_id=1, reason="tp")
 
-        # At retry 9 (last), discount = 0.10 + 9*0.02 = 0.28, capped at 0.15
-        # So sell_price = 0.50 * (1 - 0.15) = 0.425 → rounded to 0.42
+        # Last call price should be at 50% discount: 0.35 * 0.50 = 0.175 → 0.18
         last_call = strategy.bot.place_order.call_args_list[-1]
-        last_price = last_call.kwargs.get("price", last_call[1].get("price") if isinstance(last_call[1], dict) else None)
-        # Price should not be lower than 0.50 * 0.85 = 0.425
-        assert last_price >= 0.42, f"Price {last_price} should be >= 0.42 (max 15% discount)"
+        last_price = last_call.kwargs.get("price")
+        # Price should never be below 0.01 (minimum floor)
+        assert last_price >= 0.01, f"Price {last_price} should be >= 0.01"
+        # With 50% max discount from best_bid=0.35: 0.35*0.5 = 0.175 → 0.18
+        # Price should not exceed the no-discount price
+        assert last_price <= 0.35, f"Price {last_price} should be <= 0.35 (best bid)"

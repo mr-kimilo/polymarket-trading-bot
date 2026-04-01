@@ -42,6 +42,19 @@ from .signer import OrderSigner, Order
 from .client import ClobClient, RelayerClient, ApiCredentials
 from .crypto import KeyManager, CryptoError, InvalidPasswordError
 
+import time
+from py_clob_client.clob_types import (
+    ApiCreds as PyClobApiCreds,
+    MarketOrderArgs,
+    OrderArgs,
+    OrderType as ClobOrderType,
+    PartialCreateOrderOptions,
+)
+from py_clob_client.client import ClobClient as PyClobClient
+from py_builder_signing_sdk.config import BuilderConfig as SdkBuilderConfig
+from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+from typing import Literal
+
 
 # Configure logging
 logging.basicConfig(
@@ -199,9 +212,12 @@ class TradingBot:
         self.clob_client: Optional[ClobClient] = None
         self.relayer_client: Optional[RelayerClient] = None
         self._api_creds: Optional[ApiCredentials] = None
+        self._private_key: Optional[str] = None
+        self._py_client: Optional[PyClobClient] = None
 
         # Load private key
         if private_key:
+            self._private_key = private_key
             self.signer = OrderSigner(private_key)
         elif encrypted_key_path and password:
             self._load_encrypted_key(encrypted_key_path, password)
@@ -224,6 +240,7 @@ class TradingBot:
         try:
             manager = KeyManager()
             private_key = manager.load_and_decrypt(password, filepath)
+            self._private_key = private_key
             self.signer = OrderSigner(private_key)
             logger.info(f"Loaded encrypted key from {filepath}")
         except FileNotFoundError:
@@ -251,6 +268,17 @@ class TradingBot:
             logger.info("Deriving L2 API credentials...")
             self._api_creds = self.clob_client.create_or_derive_api_key(self.signer)
             self.clob_client.set_api_creds(self._api_creds)
+
+            # Also set creds on the PyClobClient SDK instance
+            if self._py_client and self._api_creds:
+                py_creds = PyClobApiCreds(
+                    api_key=self._api_creds.api_key,
+                    api_secret=self._api_creds.secret,
+                    api_passphrase=self._api_creds.passphrase,
+                )
+                self._py_client.set_api_creds(py_creds)
+                logger.info("PyClobClient API credentials set (L2 ready)")
+
             logger.info("L2 API credentials derived successfully")
         except Exception as e:
             logger.warning(f"Failed to derive API credentials: {e}")
@@ -270,6 +298,27 @@ class TradingBot:
             api_creds=self._api_creds,
             builder_creds=self.config.builder if self.config.use_gasless else None,
         )
+
+        # py_clob_client SDK client — used for order creation, signing, and submission
+        if self._private_key:
+            sdk_builder_config = None
+            if self.config.use_gasless and self.config.builder and self.config.builder.is_configured():
+                sdk_builder_config = SdkBuilderConfig(
+                    local_builder_creds=BuilderApiKeyCreds(
+                        key=self.config.builder.api_key,
+                        secret=self.config.builder.api_secret,
+                        passphrase=self.config.builder.api_passphrase,
+                    )
+                )
+            self._py_client = PyClobClient(
+                host=self.config.clob.host,
+                chain_id=self.config.clob.chain_id,
+                key=self._private_key,
+                signature_type=self.config.clob.signature_type,
+                funder=self.config.safe_address,
+                builder_config=sdk_builder_config,
+            )
+            logger.info("PyClobClient initialized for order signing/submission")
 
         # Relayer client (for gasless)
         if self.config.use_gasless:
@@ -301,6 +350,14 @@ class TradingBot:
             )
         return self.signer
 
+    def _require_py_client(self) -> PyClobClient:
+        """Get PyClobClient or raise if not initialized."""
+        if not self._py_client:
+            raise NotInitializedError(
+                "PyClobClient not initialized. Provide private_key or encrypted_key."
+            )
+        return self._py_client
+
     async def place_order(
         self,
         token_id: str,
@@ -308,94 +365,133 @@ class TradingBot:
         size: float,
         side: str,
         order_type: str = "GTC",
-        fee_rate_bps: int = 0
+        fee_rate_bps: int = 0,
+        tick_size: Optional[str] = None,
+        neg_risk: Optional[bool] = None,
     ) -> OrderResult:
         """
-        Place a limit order.
+        Place a limit order on Polymarket CLOB.
+
+        Uses py_clob_client SDK for order creation, signing, and submission.
+        For FOK/FAK orders, uses create_market_order (expiration=0).
+        For GTC/GTD orders, uses create_order (with 30-day expiration).
 
         Args:
             token_id: Market token ID
-            price: Price per share (0-1)
-            size: Number of shares
+            price: Price per share (between 0 and 1)
+            size: Number of shares (will be rounded to 2 decimals)
             side: 'BUY' or 'SELL'
-            order_type: Order type (GTC, GTD, FOK)
+            order_type: Order type (GTC, GTD, FOK, FAK)
             fee_rate_bps: Fee rate in basis points
+            tick_size: Optional cached tick size (avoids API call on retries)
+            neg_risk: Optional cached neg_risk flag (avoids API call on retries)
 
         Returns:
             OrderResult with order status
         """
-        signer = self.require_signer()
+        py_client = self._require_py_client()
 
         try:
-            # Get tick size for this market and adjust price
-            tick_size_str = await self._run_in_thread(
-                self.clob_client.get_tick_size,
-                token_id
+            # Use Decimal for precise price calculations
+            tick_size_str = tick_size or await self._run_in_thread(
+                py_client.get_tick_size, token_id
             )
-            
-            # Adjust price to tick size multiple
-            adjusted_price = self._adjust_price_to_tick(price, tick_size_str)
-            
-            # Ensure price is within valid bounds (0, 1)
-            if adjusted_price <= 0:
-                adjusted_price = Decimal(tick_size_str)
-            if adjusted_price >= 1:
-                adjusted_price = Decimal("1") - Decimal(tick_size_str)
-            
-            # Round size to 2 decimals (required by API)
-            adjusted_size = round(size, 2)
-            
-            # Convert Decimal to float properly by going through string to avoid precision issues
-            final_price = float(str(adjusted_price))
-            
-            logger.info(f"Adjusted price: {price} -> {final_price} (tick_size={tick_size_str})")
-            
-            # Create order with adjusted price
-            order = Order(
-                token_id=token_id,
-                price=final_price,
-                size=adjusted_size,
-                side=side,
-                maker=self.config.safe_address,
-                fee_rate_bps=fee_rate_bps,
+            tick_dec = Decimal(tick_size_str)
+
+            # Adjust price to nearest valid tick multiple
+            adjusted_price_dec = self._adjust_price_to_tick(price, tick_size_str)
+
+            # Ensure price stays strictly within (0, 1) and respects tick size
+            if adjusted_price_dec <= 0:
+                adjusted_price_dec = tick_dec
+            if adjusted_price_dec >= 1:
+                adjusted_price_dec = Decimal(1) - tick_dec
+
+            # Size: round to 2 decimal places (Polymarket requirement)
+            adjusted_size = round(float(size), 2)
+
+            # Safe conversion to float
+            final_price = float(str(adjusted_price_dec))
+
+            logger.info(
+                f"Adjusted price: {price} -> {final_price} (tick_size={tick_size_str}) | "
+                f"Size: {size} -> {adjusted_size} | {side} {order_type}"
             )
 
-            # Check if market is neg_risk (uses different exchange contract)
-            neg_risk = await self._run_in_thread(
-                self.clob_client.get_neg_risk,
-                token_id
-            )
+            # Resolve neg_risk once
+            if neg_risk is None:
+                neg_risk = await self._run_in_thread(
+                    py_client.get_neg_risk, token_id
+                )
+            options = PartialCreateOrderOptions(neg_risk=neg_risk)
 
-            # Sign order with correct exchange contract
-            signed = signer.sign_order(order, neg_risk=neg_risk)
+            is_market_order = order_type in ("FOK", "FAK")
 
-            # Print order body for debugging
-            logger.info(f"Order body: side={side}, price={final_price}, size={adjusted_size}, fee={fee_rate_bps}")
-            
-            # Submit to CLOB
+            if is_market_order:
+                # FOK/FAK: use create_market_order (sets expiration=0)
+                market_args = MarketOrderArgs(
+                    token_id=token_id,
+                    price=final_price,
+                    amount=adjusted_size,
+                    side=side,
+                    fee_rate_bps=fee_rate_bps,
+                )
+                signed_order = await self._run_in_thread(
+                    py_client.create_market_order,
+                    market_args,
+                    options,
+                )
+            else:
+                # GTC/GTD: use create_order (with expiration)
+                order_args = OrderArgs(
+                    token_id=token_id,
+                    price=final_price,
+                    size=adjusted_size,
+                    side=side,
+                    fee_rate_bps=fee_rate_bps,
+                    expiration=int(time.time()) + 86400 * 30,
+                )
+                signed_order = await self._run_in_thread(
+                    py_client.create_order,
+                    order_args,
+                    options,
+                )
+
+            # Submit order via PyClobClient (handles builder HMAC headers)
             response = await self._run_in_thread(
-                self.clob_client.post_order,
-                signed,
-                order_type,
+                py_client.post_order,
+                signed_order,
+                getattr(ClobOrderType, order_type),
             )
 
-            # 任务14: Log full response for debugging order failures
+            # Debug logging
+            logger.info(
+                f"Order submitted: {side} {adjusted_size} @ {final_price} "
+                f"[{order_type}] (fee={fee_rate_bps} bps, token={token_id[:16]}...)"
+            )
+
+            # Check for error message in response
             error_msg = response.get("errorMsg", "")
             if error_msg:
                 logger.warning(
-                    f"Order response has errorMsg: {error_msg} "
+                    f"Order response errorMsg: {error_msg} "
                     f"(success={response.get('success')}, orderId={response.get('orderId')})"
                 )
             else:
                 logger.info(
-                    f"Order placed: {side} {adjusted_size}@{adjusted_price} "
-                    f"(token: {token_id[:16]}...)"
+                    f"Order placed successfully: {side} {adjusted_size}@{adjusted_price_dec} "
+                    f"[{order_type}] (token: {token_id[:16]}...)"
                 )
 
             return OrderResult.from_response(response)
 
         except Exception as e:
-            logger.error(f"Failed to place order: {e}")
+            error_lower = str(e).lower()
+            if "duplicated" in error_lower:
+                logger.warning(f"Duplicated order: {e}")
+                return OrderResult(success=False, message="Duplicated order")
+
+            logger.error(f"Place order failed for token {token_id[:16]}...: {e}", exc_info=True)
             return OrderResult(
                 success=False,
                 message=str(e)
@@ -601,6 +697,33 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Failed to get order book: {e}")
             return {}
+
+    async def get_best_bid(self, token_id: str) -> Optional[float]:
+        """
+        Get best bid price from the orderbook for quick sell price discovery.
+
+        Args:
+            token_id: Market token ID
+
+        Returns:
+            Best bid price, or None if orderbook is empty
+        """
+        try:
+            ob_data = await self._run_in_thread(
+                self.clob_client.get_order_book, token_id
+            )
+            bids = ob_data.get("bids", [])
+            if bids:
+                valid_bids = [
+                    float(b.get("price", 0))
+                    for b in bids
+                    if float(b.get("price", 0)) > 0.01
+                ]
+                if valid_bids:
+                    return max(valid_bids)
+        except Exception as e:
+            logger.error(f"Failed to get best bid: {e}")
+        return None
 
     async def get_market_price(self, token_id: str) -> Dict[str, Any]:
         """

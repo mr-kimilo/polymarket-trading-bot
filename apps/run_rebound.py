@@ -357,6 +357,9 @@ def main():
         print("Or use --simulation mode for testing")
         sys.exit(1)
 
+    # Load max_session_orders from config (任务2) - 需要在打印启动信息前加载
+    max_session_orders = load_max_session_orders_from_config()
+
     # Print startup info
     mode_str = f"{Colors.YELLOW}SIMULATION{Colors.RESET}" if simulation_mode else f"{Colors.RED}LIVE TRADING{Colors.RESET}"
     print(f"\n{Colors.BOLD}{'='*60}{Colors.RESET}", flush=True)
@@ -438,9 +441,6 @@ def main():
     
     # Load order_schedule setting from config (任务68)
     order_schedule_enabled = load_order_schedule_from_config()
-    
-    # Load max_session_orders from config (任务2)
-    max_session_orders = load_max_session_orders_from_config()
     
     strategy_config = ReboundConfig(
         strategy_type=final_strategy_type,

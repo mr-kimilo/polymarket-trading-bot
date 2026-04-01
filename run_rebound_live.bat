@@ -12,7 +12,7 @@ REM   3. 崩溃自动重启
 REM
 REM 配置说明:
 REM   --coin BTC      : 交易币种
-REM   --size 2        : 每笔交易2美元
+REM   --size 1        : 每笔交昱1美元
 REM   --live          : 启用真实交易
 REM 
 REM 环境变量要求（.env文件）:
@@ -31,7 +31,7 @@ echo ============================================================
 echo.
 echo  交易参数 Trading Parameters:
 echo    币种 Coin: BTC
-echo    金额 Size: $2.00 USDC per trade
+echo    金额 Size: $1.00 USDC per trade
 echo    模式 Mode: LIVE (真实交易)
 echo.
 echo  请确认以下环境变量已正确配置:
@@ -56,8 +56,8 @@ echo.
 echo [%date% %time%] 启动 Rebound 真实交易策略...
 echo.
 
-REM 真实交易: --live 启用, --size 2 每笔2美元
-python apps/run_rebound.py --coin BTC --size 2 --live
+REM 真实交易: --live 启用, --size 1 每笔1美元
+python apps/run_rebound.py --coin BTC --size 1 --live
 
 echo.
 echo [%date% %time%] 策略已停止。

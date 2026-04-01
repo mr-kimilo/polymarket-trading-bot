@@ -233,6 +233,19 @@ def load_weekday_strict_from_config() -> dict:
     return defaults
 
 
+def load_max_session_orders_from_config() -> int:
+    """从config.yaml加载max_session_orders配置 (任务2)"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            return int(config.get("max_session_orders", 0))
+        except Exception:
+            pass
+    return 0
+
+
 def main():
     """Main entry point."""
     # 首先从config.yaml加载strategy.type
@@ -356,6 +369,8 @@ def main():
     print(f"Drop Threshold: {drop_threshold:.2f}", flush=True)
     print(f"BTC Drop Max: ${btc_drop_max:.2f}", flush=True)
     print(f"Active Segments: {segments}", flush=True)
+    if max_session_orders > 0:
+        print(f"{Colors.YELLOW}Max Session Orders: {max_session_orders} (will stop after {max_session_orders} buys){Colors.RESET}", flush=True)
     print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n", flush=True)
     
     # 任务6: 风险控制 - 检查BTC 24小时波动性
@@ -424,6 +439,9 @@ def main():
     # Load order_schedule setting from config (任务68)
     order_schedule_enabled = load_order_schedule_from_config()
     
+    # Load max_session_orders from config (任务2)
+    max_session_orders = load_max_session_orders_from_config()
+    
     strategy_config = ReboundConfig(
         strategy_type=final_strategy_type,
         coin=args.coin,
@@ -450,7 +468,9 @@ def main():
         weekday_strict_enabled=weekday_config["enabled"],
         weekday_strict_threshold=weekday_config["threshold"],
         weekday_strict_btc_max=weekday_config["btc_max"],
-        weekday_size_multiplier=weekday_config["size_multiplier"]
+        weekday_size_multiplier=weekday_config["size_multiplier"],
+        # 任务2: 单次运行最大下单数
+        max_session_orders=max_session_orders,
     )
 
     # Create and run strategy

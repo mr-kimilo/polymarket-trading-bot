@@ -152,6 +152,10 @@ class ReboundConfig:
     weekday_strict_btc_max: float = 30.0  # 严格模式BTC变化限制 (原50.0)
     weekday_size_multiplier: float = 0.5  # 严格模式仓位乘数 (原1.0)
 
+    # 任务2: 单次运行最大下单数 (0=无限制)
+    # 达到上限后不再开新仓，但仍然会管理和关闭已有持仓
+    max_session_orders: int = 0
+
 
 @dataclass 
 class PriceRecord:
@@ -411,6 +415,8 @@ class ReboundStrategy:
         self._closing_sides: set = set()  # sides currently being closed (prevents double-close)
         # P&L tracking: record peak price (highest observed price after entry) per side
         self._position_peak_price: Dict[str, float] = {}
+        # 任务2: session-level order counter (buy orders placed this session)
+        self._session_order_count: int = 0
 
         # 市场开始时间
         self._market_start_time: Optional[float] = None
@@ -1011,6 +1017,14 @@ class ReboundStrategy:
         Returns:
             是否成功
         """
+        # 任务2: 检查是否已达到本次运行的最大下单数
+        if self.config.max_session_orders > 0 and self._session_order_count >= self.config.max_session_orders:
+            self.log(
+                f"[SESSION LIMIT] 已达到最大下单数 {self.config.max_session_orders}，跳过新开仓",
+                "warning"
+            )
+            return False
+
         current_price = self.prices.get_current_price(side)
         if current_price <= 0:
             self.log(f"Invalid price for {side}: {current_price}", "error")
@@ -1165,6 +1179,7 @@ class ReboundStrategy:
                 f"(size={size:.2f}, segment={trigger_info.get('segment')})",
                 "trade"
             )
+            self._session_order_count += 1
             return True
 
         # 真实模式: 保存到数据库
@@ -1188,6 +1203,7 @@ class ReboundStrategy:
                 f"(size={size:.2f}, segment={trigger_info.get('segment')})",
                 "trade"
             )
+            self._session_order_count += 1
             return True
 
         return False

@@ -158,7 +158,7 @@ class RiskChecker:
         """
         if result.error:
             print(
-                f"{Colors.YELLOW}⚠ Volatility check failed: {result.error}{Colors.RESET}",
+                f"{Colors.YELLOW}!! Volatility check failed: {result.error}{Colors.RESET}",
                 flush=True,
             )
             return
@@ -189,7 +189,7 @@ class RiskChecker:
         if result.is_high_risk:
             print(
                 f"\n{Colors.RED}{Colors.BOLD}"
-                f"  ⚠⚠⚠  HIGH VOLATILITY WARNING  ⚠⚠⚠{Colors.RESET}",
+                f"  !!!  HIGH VOLATILITY WARNING  !!!{Colors.RESET}",
                 flush=True,
             )
             print(
@@ -204,8 +204,9 @@ class RiskChecker:
                 flush=True,
             )
         else:
+            # Windows 兼容ASCII符号
             print(
-                f"\n{Colors.GREEN}  ✓ Volatility is within safe range.{Colors.RESET}",
+                f"\n{Colors.GREEN}  OK Volatility is within safe range.{Colors.RESET}",
                 flush=True,
             )
 

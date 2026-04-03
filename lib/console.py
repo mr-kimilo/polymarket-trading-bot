@@ -48,14 +48,14 @@ class Colors:
     TRADE = MAGENTA
 
 
-# Log level configuration
+# Log level configuration (Windows compatible - ASCII only)
 LOG_SYMBOLS = {
-    "info": ("ℹ", Colors.BLUE),
-    "success": ("✓", Colors.GREEN),
-    "warning": ("⚠", Colors.YELLOW),
-    "error": ("✗", Colors.RED),
+    "info": ("i", Colors.BLUE),
+    "success": ("OK", Colors.GREEN),
+    "warning": ("!!", Colors.YELLOW),
+    "error": ("XX", Colors.RED),
     "trade": ("$", Colors.MAGENTA),
-    "debug": ("·", Colors.DIM),
+    "debug": (".", Colors.DIM),
 }
 
 

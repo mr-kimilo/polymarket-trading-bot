@@ -40,6 +40,7 @@ from typing import Dict, Optional, List, Tuple
 from lib.console import Colors, format_countdown, LogBuffer
 from lib.market_manager import MarketManager, MarketInfo
 from lib.price_tracker import PriceTracker
+from lib.order_retry_handler import PolymarketOrderRetryHandler, RetryConfig, ErrorCategory
 from src.bot import TradingBot
 from src.websocket_client import OrderbookSnapshot
 from src.database import ReboundOrder, OrderStatus, get_database
@@ -430,6 +431,16 @@ class ReboundStrategy:
         }
         self._last_trend_record_time: float = 0
         self._trend_record_interval: float = 15.0  # 每15秒记录一次
+        
+        # 统一的订单重试处理器
+        self._retry_handler = PolymarketOrderRetryHandler(
+            RetryConfig(
+                max_retries=3,
+                base_wait_time=3.0,
+                exponential_backoff=True,
+                backoff_multiplier=2.0
+            )
+        )
         
         # 任务56补充：已关闭订单的趋势跟踪
         # 即使订单提前关闭，也继续记录趋势直到15分钟结束
@@ -1083,7 +1094,7 @@ class ReboundStrategy:
                 return False
             
             # 任务14+15: BUY下单 + 成交验证 + 重试
-            # 任务15: 使用市场价格（best ask）买入，而不是固定溢价
+            # 使用统一的错误处理器进行重试
             buy_filled = False
             max_buy_retries = 3
             premium_increment = 0.02  # 每次重试在市场价基础上增加溢价
@@ -1101,19 +1112,50 @@ class ReboundStrategy:
                     "trade"
                 )
                 
-                # BTC UP/DOWN 15-minute markets have 10% taker fee (1000 bps)
-                result = await self.bot.place_order(
-                    token_id=token_id,
-                    price=buy_price,
-                    size=size,
-                    side="BUY",
-                    fee_rate_bps=1000
+                # 使用错误处理器执行下单
+                async def place_buy_order():
+                    return await self.bot.place_order(
+                        token_id=token_id,
+                        price=buy_price,
+                        size=size,
+                        side="BUY",
+                        fee_rate_bps=1000
+                    )
+                
+                retry_result = await self._retry_handler.execute_with_retry(
+                    place_buy_order,
+                    operation_name=f"BUY {side.upper()}",
+                    context={"price": buy_price, "size": size}
                 )
                 
-                if not result.success:
-                    self.log(f"[LIVE] BUY order rejected: {result.message}", "error")
-                    return False
+                if not retry_result.success:
+                    # 检查是否是不可重试的错误
+                    if retry_result.error_category in [
+                        ErrorCategory.INVALID_SIGNATURE,
+                        ErrorCategory.INSUFFICIENT_BALANCE
+                    ]:
+                        self.log(
+                            f"[LIVE] BUY failed with non-retryable error: {retry_result.error_category.value}",
+                            "error"
+                        )
+                        return False
+                    
+                    self.log(
+                        f"[LIVE] BUY order failed after retries: {retry_result.error}",
+                        "error"
+                    )
+                    continue
                 
+                result = retry_result.result
+
+                # CLOB明确拒绝订单（success=False）时直接返回失败
+                if not result.success:
+                    self.log(
+                        f"[LIVE] BUY order rejected by CLOB: {result.message}",
+                        "error"
+                    )
+                    return False
+
                 order.order_id = result.order_id
                 self.log(f"[LIVE] BUY order accepted: {result.order_id}", "info")
                 
@@ -1534,17 +1576,37 @@ class ReboundStrategy:
             )
 
             try:
-                result = await self.bot.place_order(
-                    token_id=token_id,
-                    price=sell_price,
-                    size=rounded_size,
-                    side='SELL',
-                    order_type=order_type,
-                    fee_rate_bps=fee_rate_bps,
-                    tick_size=cached_tick_size,
-                    neg_risk=cached_neg_risk,
+                # 使用统一的错误处理器执行卖单
+                async def place_sell_order():
+                    return await self.bot.place_order(
+                        token_id=token_id,
+                        price=sell_price,
+                        size=rounded_size,
+                        side='SELL',
+                        order_type=order_type,
+                        fee_rate_bps=fee_rate_bps,
+                        tick_size=cached_tick_size,
+                        neg_risk=cached_neg_risk,
+                    )
+                
+                retry_result = await self._retry_handler.execute_with_retry(
+                    place_sell_order,
+                    operation_name=f"SELL {side.upper()}",
+                    context={"price": sell_price, "size": rounded_size, "type": order_type}
                 )
-
+                
+                if not retry_result.success:
+                    # 记录错误但继续重试（通过降价）
+                    self.log(
+                        f"[SELL] Order failed: {retry_result.error_category.value if retry_result.error_category else 'unknown'}",
+                        "warning"
+                    )
+                    retry += 1
+                    await sleep(retry_delay)
+                    continue
+                
+                result = retry_result.result
+                
                 if result.success:
                     self.log(
                         f"[SELL] Order accepted: id={result.order_id} status={result.status}",
@@ -1588,8 +1650,6 @@ class ReboundStrategy:
                             f"[SELL] FOK no match (status={result.status}), retrying lower",
                             "warning"
                         )
-                else:
-                    self.log(f"[SELL] Order rejected: {result.message}", "error")
 
             except Exception as e:
                 self.log(f"[SELL] Exception: {e}", "error")
@@ -2091,6 +2151,11 @@ class ReboundStrategy:
             # 关闭所有持仓
             self._close_all_positions()
             await self.market.stop()
+            
+            # 输出错误统计信息
+            self._print_error_stats()
+            
+            # 输出运行摘要
             self._print_summary()
     
     async def _check_auto_claim(self) -> None:
@@ -2131,6 +2196,26 @@ class ReboundStrategy:
                     self.log("No redeemable positions found", "info")
         except Exception as e:
             self.log(f"Auto-claim error: {e}", "error")
+    
+    def _print_error_stats(self) -> None:
+        """输出错误统计信息"""
+        stats = self._retry_handler.get_error_stats()
+        
+        if not stats:
+            return
+        
+        print(f"\n{Colors.BOLD}{'='*60}{Colors.RESET}", flush=True)
+        print(f"{Colors.CYAN}错误统计 (Error Statistics){Colors.RESET}", flush=True)
+        print(f"{Colors.BOLD}{'='*60}{Colors.RESET}", flush=True)
+        
+        total_errors = sum(stats.values())
+        print(f"Total Errors: {total_errors}", flush=True)
+        
+        for error_type, count in sorted(stats.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / total_errors * 100) if total_errors > 0 else 0
+            print(f"  {error_type:25s}: {count:3d} ({percentage:5.1f}%)", flush=True)
+        
+        print(f"{Colors.BOLD}{'='*60}{Colors.RESET}\n", flush=True)
     
     def _print_summary(self) -> None:
         """打印会话统计"""

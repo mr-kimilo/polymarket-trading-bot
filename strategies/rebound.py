@@ -1113,12 +1113,14 @@ class ReboundStrategy:
                 )
                 
                 # 使用错误处理器执行下单
+                # 使用FOK订单类型避免资金被挂单锁定
                 async def place_buy_order():
                     return await self.bot.place_order(
                         token_id=token_id,
                         price=buy_price,
                         size=size,
                         side="BUY",
+                        order_type="FOK",  # FOK不会留下挂单，避免资金锁定
                         fee_rate_bps=1000
                     )
                 
@@ -1475,6 +1477,7 @@ class ReboundStrategy:
         - Max retries: 25 (~15s for FOK, ~40s for GTC phase)
         - On success: removes position from _active_positions
         - On failure: clears _closing_sides so P&L evaluator can retry
+        - BUGFIX: Cancel all pending orders for this token before sell to free up balance
         """
         if not self.bot:
             self.log("Error: Bot not initialized for LIVE closing", "error")
@@ -1484,6 +1487,14 @@ class ReboundStrategy:
         token_id = pos_info.get("token_id") or self.token_ids.get(side)
         size = pos_info.get("size", 0)
         entry_price = pos_info.get("entry_price", 0)
+        
+        # BUGFIX: 卖出前先取消该token的所有挂单，释放锁定的余额
+        # 防止 "not enough balance" 错误
+        try:
+            self.log(f"[SELL] Cancelling pending orders for token {token_id[:16]}...", "info")
+            await self.bot.cancel_market_orders(asset_id=token_id)
+        except Exception as e:
+            self.log(f"[SELL] Cancel pending orders failed (continuing anyway): {e}", "warning")
 
         from asyncio import sleep
         max_retries = 25

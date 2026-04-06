@@ -373,8 +373,9 @@ class TradingBot:
         Place a limit order on Polymarket CLOB.
 
         Uses py_clob_client SDK for order creation, signing, and submission.
-        For FOK/FAK orders, uses create_market_order (expiration=0).
-        For GTC/GTD orders, uses create_order (with 30-day expiration).
+        - FOK/FAK orders: use create_market_order (expiration=0)
+        - GTC orders: expiration=0 (good till cancelled)
+        - GTD orders: expiration=timestamp (good till specific date)
 
         Args:
             token_id: Market token ID
@@ -442,14 +443,20 @@ class TradingBot:
                     options,
                 )
             else:
-                # GTC/GTD: use create_order (with expiration)
+                # GTC: expiration=0 (永久有效直到取消)
+                # GTD: expiration=timestamp (需要指定具体过期时间)
+                expiration_time = 0
+                if order_type == "GTD":
+                    # GTD订单：30天后过期
+                    expiration_time = int(time.time()) + 86400 * 30
+                
                 order_args = OrderArgs(
                     token_id=token_id,
                     price=final_price,
                     size=adjusted_size,
                     side=side,
                     fee_rate_bps=fee_rate_bps,
-                    expiration=int(time.time()) + 86400 * 30,
+                    expiration=expiration_time,
                 )
                 signed_order = await self._run_in_thread(
                     py_client.create_order,
